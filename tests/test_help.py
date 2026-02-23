@@ -21,13 +21,14 @@ class TestHelpCommand(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0)
         self.assertIn("--drive", result.stdout)
+        self.assertIn("--targets", result.stdout)
         self.assertIn("--top", result.stdout)
         self.assertIn("--json", result.stdout)
         self.assertIn("--clean", result.stdout)
-        self.assertIn("--older-than-days", result.stdout)
+        self.assertIn("--permanent-delete", result.stdout)
 
 
-class TestSafeCleanV2(unittest.TestCase):
+class TestSafeCleanV3(unittest.TestCase):
     def test_clean_requires_yes_confirmation(self) -> None:
         env = os.environ.copy()
         env["PYTHONPATH"] = "src"
@@ -62,6 +63,8 @@ class TestSafeCleanV2(unittest.TestCase):
                     sys.executable,
                     "-m",
                     "clearc",
+                    "--targets",
+                    "temp",
                     "--older-than-days",
                     "7",
                     "--top",
@@ -75,8 +78,24 @@ class TestSafeCleanV2(unittest.TestCase):
 
             self.assertEqual(result.returncode, 0)
             self.assertIn("mode: dry-run", result.stdout)
+            self.assertIn("targets: temp", result.stdout)
             self.assertIn("preview: 1 files", result.stdout)
             self.assertTrue(old_tmp.exists())
+
+    def test_invalid_targets_rejected(self) -> None:
+        env = os.environ.copy()
+        env["PYTHONPATH"] = "src"
+
+        result = subprocess.run(
+            [sys.executable, "-m", "clearc", "--targets", "temp,unknown"],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("Unsupported targets", result.stdout)
 
 
 if __name__ == "__main__":
