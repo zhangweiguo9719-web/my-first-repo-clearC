@@ -46,6 +46,7 @@
 │       ├── __init__.py
 │       ├── __main__.py
 │       ├── cli.py
+│       ├── gui.py
 │       └── scanner.py
 └── tests/
     └── test_help.py
@@ -56,8 +57,11 @@
 ### 1) 安装依赖
 
 ```bash
+set PYTHONUTF8=1
 python -m pip install -r requirements.txt
 ```
+
+> Windows（GBK 控制台）建议先设置 `PYTHONUTF8=1`，避免 pip 输出与文件读写编码问题。
 
 ### 2) 默认预览（dry-run，默认目标 temp/recycle/wer）
 
@@ -94,6 +98,32 @@ PYTHONPATH=src python -m clearc --clean --yes --permanent-delete --targets temp
 ```bash
 PYTHONPATH=src python -m clearc --targets temp,recycle,wer --json reports/clearc-report.json
 ```
+
+### 8) 启动 GUI（Tkinter）
+
+```bash
+set PYTHONUTF8=1
+PYTHONPATH=src python -m clearc.gui
+```
+
+GUI 功能包含：
+- 扫描/清理按钮（清理会二次确认）；
+- `targets` 多选；
+- `older-than-days` / `top` 输入；
+- 日志窗口；
+- Top 文件列表与 target 汇总表。
+
+GUI 内部通过 `subprocess` 调用 `python -m clearc ... --json <临时文件>`，再解析 JSON 渲染结果。
+
+### 9) GUI 打包（PyInstaller）
+
+```bash
+set PYTHONUTF8=1
+python -m pip install pyinstaller
+pyinstaller --noconfirm --onefile --windowed --name clearc-gui src/clearc/gui.py
+```
+
+输出文件位于 `dist/clearc-gui.exe`（Windows）。
 
 ## 命令行参数
 - `--drive`：目标盘符，默认 `C:`
