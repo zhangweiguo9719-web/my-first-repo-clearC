@@ -4,21 +4,36 @@ import argparse
 import json
 from pathlib import Path
 
-from .scanner import format_size, process_temp_dirs
+from .scanner import (
+    SYSTEM_TARGETS,
+    format_size,
+    invalid_targets,
+    is_admin,
+    parse_targets,
+    process_targets,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="clearc",
-        description="Windows C盘清理小助手（V2）- 默认安全预览，支持确认后清理。",
+        description="Windows C盘多目标清理助手（V3）- 默认安全预览，支持确认后清理。",
     )
     parser.add_argument("--drive", default="C:", help="目标盘符（默认: C:）")
     parser.add_argument("--top", type=int, default=20, help="展示Top文件数量（默认: 20）")
     parser.add_argument("--json", dest="json_path", help="可选：将报告输出为JSON文件")
+    parser.add_argument(
+        "--targets",
+        help=(
+            "清理目标，逗号分隔："
+            "temp,recycle,wer,dumps,do_cache,update_cache,browser_cache；"
+            "默认: temp,recycle,wer"
+        ),
+    )
 
     mode_group = parser.add_mutually_exclusive_group()
     mode_group.add_argument("--dry-run", action="store_true", help="仅预览候选文件（默认开启）")
-    mode_group.add_argument("--clean", action="store_true", help="执行清理动作")
+    mode_group.add_argument("--clean", action="store_true", help="执行清理动作（需配合 --yes）")
     parser.set_defaults(dry_run=True, clean=False)
 
     parser.add_argument("--yes", action="store_true", help="确认删除；若未提供则 --clean 直接退出")
@@ -26,13 +41,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--older-than-days",
         type=int,
         default=7,
-        help="仅处理修改时间早于N天的文件（默认: 7）",
+        help="仅 temp 目标会使用该规则：处理修改时间早于N天的临时文件（默认: 7）",
     )
     parser.add_argument(
-        "--use-recycle-bin",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="删除时是否优先移入回收站（默认: True）",
+        "--permanent-delete",
+        action="store_true",
+        help="危险：执行永久删除；默认安全模式使用回收站（send2trash）",
     )
     return parser
 
@@ -40,25 +54,45 @@ def build_parser() -> argparse.ArgumentParser:
 def run(args: argparse.Namespace) -> int:
     top_n = max(1, args.top)
     dry_run = not args.clean
+    targets = parse_targets(args.targets)
+    bad_targets = invalid_targets(targets)
+
+    if bad_targets:
+        print("Unsupported targets: " + ", ".join(sorted(bad_targets)))
+        print("Supported targets: temp,recycle,wer,dumps,do_cache,update_cache,browser_cache")
+        return 2
 
     if args.clean and not args.yes:
         print("Refusing to clean without --yes confirmation. Use --clean --yes to continue.")
         return 2
 
-    result = process_temp_dirs(
+    admin_mode = is_admin()
+    requested_system_targets = [target for target in targets if target in SYSTEM_TARGETS]
+    if args.clean and requested_system_targets and not admin_mode:
+        print("System targets require administrator privileges when running --clean.")
+        print("Please run in an elevated terminal (Run as Administrator), or switch to --dry-run.")
+        print("Blocked targets: " + ", ".join(requested_system_targets))
+        return 2
+
+    use_recycle_bin = not args.permanent_delete
+    result = process_targets(
+        targets=targets,
         drive=args.drive,
         top_n=top_n,
         dry_run=dry_run,
         older_than_days=max(0, args.older_than_days),
-        use_recycle_bin=args.use_recycle_bin,
+        use_recycle_bin=use_recycle_bin,
     )
 
     report = {
         "drive": args.drive,
+        "targets": targets,
         "dry_run": dry_run,
         "clean": args.clean,
         "older_than_days": max(0, args.older_than_days),
-        "use_recycle_bin": args.use_recycle_bin,
+        "permanent_delete": args.permanent_delete,
+        "use_recycle_bin": use_recycle_bin,
+        "is_admin": admin_mode,
         "scanned_dirs": result.scanned_dirs,
         "summary": {
             "preview_files": result.preview_files,
@@ -68,15 +102,17 @@ def run(args: argparse.Namespace) -> int:
             "deleted_size_bytes": result.deleted_size_bytes,
             "deleted_size_human": format_size(result.deleted_size_bytes),
             "skipped_reasons": result.skipped_reasons,
+            "targets": result.target_summaries,
         },
         "top_files": result.top_files,
     }
 
-    print("=== clearc safe-clean report ===")
+    print("=== clearc multi-target safe-clean report (V3) ===")
     print(f"drive: {args.drive}")
+    print(f"targets: {','.join(targets)}")
     print(f"mode: {'dry-run' if dry_run else 'clean'}")
     print(f"older_than_days: {report['older_than_days']}")
-    print(f"use_recycle_bin: {args.use_recycle_bin}")
+    print(f"deletion_mode: {'permanent-delete' if args.permanent_delete else 'recycle-bin(send2trash)'}")
     print(
         f"preview: {result.preview_files} files, "
         f"{report['summary']['preview_size_human']} ({result.preview_size_bytes} bytes)"
@@ -86,11 +122,23 @@ def run(args: argparse.Namespace) -> int:
         f"{report['summary']['deleted_size_human']} ({result.deleted_size_bytes} bytes)"
     )
 
+    print("\n[Target summary]")
+    for item in result.target_summaries:
+        print(
+            "- "
+            f"{item['target']}: "
+            f"preview={item['preview_files']} ({item['preview_size_human']}), "
+            f"deleted={item['deleted_files']} ({item['deleted_size_human']}), "
+            f"skipped(permission_denied={item['skipped']['permission_denied']}, "
+            f"in_use={item['skipped']['in_use']}, "
+            f"not_found={item['skipped']['not_found']})"
+        )
+
     print("\n[Directories]")
     for item in result.scanned_dirs:
         print(
             "- "
-            f"{item['path']} | status={item['status']} | "
+            f"[{item['target']}] {item['path']} | status={item['status']} | "
             f"preview={item['preview_files']} ({item['preview_size_human']}) | "
             f"deleted={item['deleted_files']} ({item['deleted_size_human']})"
         )
@@ -100,7 +148,10 @@ def run(args: argparse.Namespace) -> int:
         print("(no candidate files found)")
     else:
         for idx, item in enumerate(result.top_files, start=1):
-            print(f"{idx:>2}. {item['size_human']:>10} | {item['reason']:<24} | {item['path']}")
+            print(
+                f"{idx:>2}. {item['size_human']:>10} | [{item['target']}] "
+                f"{item['reason']:<24} | {item['path']}"
+            )
 
     print("\n[Skipped reasons]")
     if not result.skipped_reasons:
