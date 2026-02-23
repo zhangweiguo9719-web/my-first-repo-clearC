@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ctypes
+import locale
 import re
 import subprocess
 import sys
@@ -14,7 +15,7 @@ DISM_RESETBASE_ARGS = ["/Online", "/Cleanup-Image", "/StartComponentCleanup", "/
 
 
 def is_admin() -> bool:
-    """检测当前进程是否为管理员权限。"""
+    """检测当前进程是否为管理员权限（仅 Windows）。"""
     if sys.platform != "win32":
         return False
 
@@ -30,48 +31,50 @@ def relaunch_as_admin() -> bool:
         raise RuntimeError("仅 Windows 支持管理员提权启动")
 
     params = "-m clearc.gui"
-    # 使用 runas 触发 UAC；返回值 > 32 通常表示启动成功。
     result = ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, params, None, 1)
     return int(result) > 32
 
 
-def run_dism_stream(
-    args: list[str],
-    on_output: Callable[[str], None],
-) -> tuple[int, str]:
+def _decode_line(raw: bytes) -> str:
+    preferred = locale.getpreferredencoding(False) or "gbk"
+    for enc in (preferred, "gbk", "utf-8"):
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", errors="replace")
+
+
+def run_dism_stream(args: list[str], on_line: Callable[[str], None]) -> tuple[int, str]:
     """
     流式执行 DISM，并把每一行实时回调给 GUI。
 
-    设计说明：
-    - GUI 主线程不能阻塞，否则会“卡死”；因此由外层线程调用本函数。
-    - 使用逐行读取，让用户看到实时进度，便于判断是否长时间无响应。
-    - stderr 合并到 stdout，确保日志完整保留，排障时不丢信息。
+    说明：
+    - 使用 bytes 模式读取，优先按系统首选编码解码（兼容中文 Windows GBK 输出）；
+    - 解码失败时回退 utf-8，尽量保留可读日志；
+    - 由调用方在后台线程执行，避免 GUI 卡死。
     """
     cmd = ["DISM"] + args
     process = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
     )
 
     lines: list[str] = []
     assert process.stdout is not None
 
-    for raw_line in process.stdout:
-        line = raw_line.rstrip("\r\n")
+    for raw_line in iter(process.stdout.readline, b""):
+        line = _decode_line(raw_line).rstrip("\r\n")
         lines.append(line)
-        on_output(line)
+        on_line(line)
 
     process.wait()
-    output = "\n".join(lines)
-    return process.returncode, output
+    return process.returncode, "\n".join(lines)
 
 
 def parse_analyze_output(text: str) -> dict[str, str]:
-    """解析 DISM AnalyzeComponentStore 输出（中英兼容，优先覆盖中文系统）。"""
+    """解析 DISM AnalyzeComponentStore 输出（中英兼容）。"""
 
     def _pick(patterns: list[str]) -> str:
         for pattern in patterns:
@@ -80,7 +83,6 @@ def parse_analyze_output(text: str) -> dict[str, str]:
                 return match.group(1).strip()
         return ""
 
-    # 使用多语言模式匹配：中文标签和英文标签都支持。
     parsed = {
         "explorer_reported_size": _pick(
             [
@@ -114,7 +116,7 @@ def parse_analyze_output(text: str) -> dict[str, str]:
         ),
         "last_cleanup_date": _pick(
             [
-                r"上次清理日期\s*:\s*(.+)$",
+                r"上次清理(?:的)?日期\s*:\s*(.+)$",
                 r"Date of Last Cleanup\s*:\s*(.+)$",
             ]
         ),
