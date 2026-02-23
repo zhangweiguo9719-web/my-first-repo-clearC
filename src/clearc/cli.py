@@ -15,39 +15,33 @@ from .scanner import (
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="clearc",
-        description="Windows C盘多目标清理助手（V3）- 默认安全预览，支持确认后清理。",
-    )
+    parser = argparse.ArgumentParser(description="clearc：Windows 清理与扫描工具")
     parser.add_argument("--drive", default="C:", help="目标盘符（默认: C:）")
-    parser.add_argument("--top", type=int, default=20, help="展示Top文件数量（默认: 20）")
-    parser.add_argument("--json", dest="json_path", help="可选：将报告输出为JSON文件")
+    parser.add_argument("--top", type=int, default=20, help="展示 Top 结果数量（默认: 20）")
+    parser.add_argument("--json", dest="json_path", help="可选：将报告输出为 JSON 文件")
     parser.add_argument(
         "--targets",
         help=(
-            "清理目标，逗号分隔："
-            "temp,recycle,wer,dumps,do_cache,update_cache,browser_cache；"
+            "目标列表，逗号分隔："
+            "temp,recycle,wer,dumps,do_cache,update_cache,browser_cache,top_dirs；"
             "默认: temp,recycle,wer"
         ),
     )
 
     mode_group = parser.add_mutually_exclusive_group()
-    mode_group.add_argument("--dry-run", action="store_true", help="仅预览候选文件（默认开启）")
+    mode_group.add_argument("--dry-run", action="store_true", help="仅扫描/预览（默认开启）")
     mode_group.add_argument("--clean", action="store_true", help="执行清理动作（需配合 --yes）")
     parser.set_defaults(dry_run=True, clean=False)
 
-    parser.add_argument("--yes", action="store_true", help="确认删除；若未提供则 --clean 直接退出")
-    parser.add_argument(
-        "--older-than-days",
-        type=int,
-        default=7,
-        help="仅 temp 目标会使用该规则：处理修改时间早于N天的临时文件（默认: 7）",
-    )
+    parser.add_argument("--yes", action="store_true", help="确认执行清理；未提供则 --clean 直接退出")
+    parser.add_argument("--older-than-days", type=int, default=7, help="temp 目标的时间阈值，默认 7 天")
     parser.add_argument(
         "--permanent-delete",
         action="store_true",
-        help="危险：执行永久删除；默认安全模式使用回收站（send2trash）",
+        help="危险：直接删除文件；默认使用回收站（send2trash）",
     )
+    parser.add_argument("--dir-depth", type=int, default=2, help="top_dirs 扫描目录深度（默认: 2）")
+    parser.add_argument("--top-dirs", type=int, default=20, help="top_dirs 返回数量（默认: 20）")
     return parser
 
 
@@ -59,19 +53,24 @@ def run(args: argparse.Namespace) -> int:
 
     if bad_targets:
         print("Unsupported targets: " + ", ".join(sorted(bad_targets)))
-        print("Supported targets: temp,recycle,wer,dumps,do_cache,update_cache,browser_cache")
+        print("支持列表: temp,recycle,wer,dumps,do_cache,update_cache,browser_cache,top_dirs")
         return 2
 
     if args.clean and not args.yes:
-        print("Refusing to clean without --yes confirmation. Use --clean --yes to continue.")
+        print("Refusing to clean without --yes confirmation.")
+        print("拒绝执行：--clean 必须与 --yes 同时使用。")
+        return 2
+
+    if args.clean and "top_dirs" in targets:
+        print("top_dirs 仅支持扫描（dry-run），不支持 clean。")
         return 2
 
     admin_mode = is_admin()
     requested_system_targets = [target for target in targets if target in SYSTEM_TARGETS]
     if args.clean and requested_system_targets and not admin_mode:
-        print("System targets require administrator privileges when running --clean.")
-        print("Please run in an elevated terminal (Run as Administrator), or switch to --dry-run.")
-        print("Blocked targets: " + ", ".join(requested_system_targets))
+        print("系统级目标在 clean 模式下需要管理员权限。")
+        print("请以管理员身份运行，或改为 --dry-run。")
+        print("受影响 targets: " + ", ".join(requested_system_targets))
         return 2
 
     use_recycle_bin = not args.permanent_delete
@@ -82,6 +81,8 @@ def run(args: argparse.Namespace) -> int:
         dry_run=dry_run,
         older_than_days=max(0, args.older_than_days),
         use_recycle_bin=use_recycle_bin,
+        dir_depth=max(0, args.dir_depth),
+        top_dirs=max(1, args.top_dirs),
     )
 
     report = {
@@ -90,6 +91,8 @@ def run(args: argparse.Namespace) -> int:
         "dry_run": dry_run,
         "clean": args.clean,
         "older_than_days": max(0, args.older_than_days),
+        "dir_depth": max(0, args.dir_depth),
+        "top_dirs": max(1, args.top_dirs),
         "permanent_delete": args.permanent_delete,
         "use_recycle_bin": use_recycle_bin,
         "is_admin": admin_mode,
@@ -107,64 +110,18 @@ def run(args: argparse.Namespace) -> int:
         "top_files": result.top_files,
     }
 
-    print("=== clearc multi-target safe-clean report (V3) ===")
+    print("=== clearc 报告 ===")
     print(f"drive: {args.drive}")
     print(f"targets: {','.join(targets)}")
     print(f"mode: {'dry-run' if dry_run else 'clean'}")
-    print(f"older_than_days: {report['older_than_days']}")
-    print(f"deletion_mode: {'permanent-delete' if args.permanent_delete else 'recycle-bin(send2trash)'}")
-    print(
-        f"preview: {result.preview_files} files, "
-        f"{report['summary']['preview_size_human']} ({result.preview_size_bytes} bytes)"
-    )
-    print(
-        f"deleted: {result.deleted_files} files, "
-        f"{report['summary']['deleted_size_human']} ({result.deleted_size_bytes} bytes)"
-    )
-
-    print("\n[Target summary]")
-    for item in result.target_summaries:
-        print(
-            "- "
-            f"{item['target']}: "
-            f"preview={item['preview_files']} ({item['preview_size_human']}), "
-            f"deleted={item['deleted_files']} ({item['deleted_size_human']}), "
-            f"skipped(permission_denied={item['skipped']['permission_denied']}, "
-            f"in_use={item['skipped']['in_use']}, "
-            f"not_found={item['skipped']['not_found']})"
-        )
-
-    print("\n[Directories]")
-    for item in result.scanned_dirs:
-        print(
-            "- "
-            f"[{item['target']}] {item['path']} | status={item['status']} | "
-            f"preview={item['preview_files']} ({item['preview_size_human']}) | "
-            f"deleted={item['deleted_files']} ({item['deleted_size_human']})"
-        )
-
-    print(f"\n[Top {top_n} candidate files]")
-    if not result.top_files:
-        print("(no candidate files found)")
-    else:
-        for idx, item in enumerate(result.top_files, start=1):
-            print(
-                f"{idx:>2}. {item['size_human']:>10} | [{item['target']}] "
-                f"{item['reason']:<24} | {item['path']}"
-            )
-
-    print("\n[Skipped reasons]")
-    if not result.skipped_reasons:
-        print("(none)")
-    else:
-        for reason, count in sorted(result.skipped_reasons.items()):
-            print(f"- {reason}: {count}")
+    print(f"preview: {result.preview_files} files, {report['summary']['preview_size_human']}")
+    print(f"deleted: {result.deleted_files} files, {report['summary']['deleted_size_human']}")
 
     if args.json_path:
         out = Path(args.json_path)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-        print(f"\nJSON report written to: {out}")
+        print(f"JSON report written to: {out}")
 
     return 0
 
@@ -173,3 +130,7 @@ def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
     return run(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

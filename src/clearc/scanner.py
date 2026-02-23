@@ -21,6 +21,7 @@ SUPPORTED_TARGETS = {
     "do_cache",
     "update_cache",
     "browser_cache",
+    "top_dirs",
 }
 
 
@@ -90,7 +91,8 @@ def _expand_existing(candidates: Iterable[Path]) -> list[Path]:
 
 def get_target_roots(target: str, drive: str = "C:") -> list[Path]:
     drive = drive.rstrip("\\/")
-    local_app_data = Path.home() / "AppData" / "Local"
+    user_home = Path.home()
+    local_app_data = user_home / "AppData" / "Local"
     program_data = Path(f"{drive}\\ProgramData")
     windows_dir = Path(f"{drive}\\Windows")
 
@@ -141,6 +143,18 @@ def get_target_roots(target: str, drive: str = "C:") -> list[Path]:
             ]
         )
 
+    if target == "top_dirs":
+        return _expand_existing(
+            [
+                user_home / "Downloads",
+                user_home / "Desktop",
+                user_home / "Documents",
+                local_app_data,
+                program_data,
+                windows_dir / "Temp",
+            ]
+        )
+
     return []
 
 
@@ -181,6 +195,63 @@ def _is_candidate(file_path: Path, target: str, older_than_days: int, now_ts: fl
     return True, "target_file"
 
 
+def _within_depth(base: Path, current: Path, depth_limit: int) -> bool:
+    try:
+        relative = current.relative_to(base)
+    except ValueError:
+        return False
+    return len(relative.parts) <= depth_limit
+
+
+def scan_top_directories(
+    roots: list[Path],
+    *,
+    dir_depth: int = 2,
+    top_dirs: int = 20,
+) -> tuple[list[dict], dict[str, int]]:
+    stats: dict[str, dict[str, int]] = {}
+    skipped: dict[str, int] = {}
+
+    for root in roots:
+        if not root.exists():
+            skipped["not_found"] = skipped.get("not_found", 0) + 1
+            continue
+
+        for current_root, dirs, files in os.walk(root, topdown=True, followlinks=False):
+            current = Path(current_root)
+            if not _within_depth(root, current, max(0, dir_depth)):
+                dirs[:] = []
+                continue
+
+            key = _human_path(current)
+            info = stats.setdefault(key, {"size_bytes": 0, "file_count": 0})
+
+            for name in files:
+                file_path = current / name
+                try:
+                    file_stat = file_path.stat()
+                except OSError as exc:
+                    reason = _skip_reason(exc)
+                    skipped[reason] = skipped.get(reason, 0) + 1
+                    continue
+                info["size_bytes"] += file_stat.st_size
+                info["file_count"] += 1
+
+    rows = [
+        {
+            "path": path,
+            "size_bytes": item["size_bytes"],
+            "size_human": format_size(item["size_bytes"]),
+            "file_count": item["file_count"],
+            "target": "top_dirs",
+            "reason": "dir_usage",
+        }
+        for path, item in stats.items()
+    ]
+    rows.sort(key=lambda item: item["size_bytes"], reverse=True)
+    return rows[: max(1, top_dirs)], skipped
+
+
 def process_targets(
     targets: list[str],
     drive: str = "C:",
@@ -188,9 +259,11 @@ def process_targets(
     dry_run: bool = True,
     older_than_days: int = 7,
     use_recycle_bin: bool = True,
+    dir_depth: int = 2,
+    top_dirs: int = 20,
 ) -> CleanResult:
     scanned_dirs: list[dict] = []
-    candidates_for_top: list[tuple[int, str, str, str]] = []
+    candidates_for_top: list[tuple[int, str, str, str, int | None]] = []
     skipped_reasons: dict[str, int] = {}
 
     preview_files = 0
@@ -214,6 +287,40 @@ def process_targets(
     now_ts = time.time()
 
     for target in targets:
+        if target == "top_dirs":
+            top_rows, top_skipped = scan_top_directories(
+                get_target_roots(target="top_dirs", drive=drive),
+                dir_depth=dir_depth,
+                top_dirs=top_dirs,
+            )
+            for reason, count in top_skipped.items():
+                skipped_reasons[reason] = skipped_reasons.get(reason, 0) + count
+                if reason in target_stats[target]:
+                    target_stats[target][reason] += count
+
+            for row in top_rows:
+                preview_files += 1
+                preview_size += row["size_bytes"]
+                target_stats[target]["preview_files"] += 1
+                target_stats[target]["preview_size_bytes"] += row["size_bytes"]
+                candidates_for_top.append((row["size_bytes"], row["path"], row["reason"], target, row["file_count"]))
+
+            scanned_dirs.append(
+                {
+                    "target": target,
+                    "path": "内置目录集合",
+                    "status": "ok",
+                    "preview_files": len(top_rows),
+                    "preview_size_bytes": sum(item["size_bytes"] for item in top_rows),
+                    "preview_size_human": format_size(sum(item["size_bytes"] for item in top_rows)),
+                    "deleted_files": 0,
+                    "deleted_size_bytes": 0,
+                    "deleted_size_human": format_size(0),
+                    "error": "",
+                }
+            )
+            continue
+
         for candidate in get_target_roots(target=target, drive=drive):
             dir_preview = 0
             dir_preview_size = 0
@@ -275,7 +382,7 @@ def process_targets(
                     dir_preview_size += size
                     target_stats[target]["preview_files"] += 1
                     target_stats[target]["preview_size_bytes"] += size
-                    candidates_for_top.append((size, _human_path(file_path), reason, target))
+                    candidates_for_top.append((size, _human_path(file_path), reason, target, None))
 
                     if dry_run:
                         continue
@@ -323,8 +430,9 @@ def process_targets(
             "size_human": format_size(size),
             "reason": reason,
             "target": target,
+            "file_count": file_count,
         }
-        for size, path, reason, target in candidates_for_top[: max(1, top_n)]
+        for size, path, reason, target, file_count in candidates_for_top[: max(1, top_n)]
     ]
 
     target_summaries = [
