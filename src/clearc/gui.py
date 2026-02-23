@@ -11,6 +11,15 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox, ttk
 
+from .dism_component_store import (
+    DISM_ANALYZE_ARGS,
+    DISM_CLEAN_ARGS,
+    DISM_RESETBASE_ARGS,
+    is_admin,
+    parse_analyze_output,
+    relaunch_as_admin,
+    run_dism_stream,
+)
 from .scanner import DEFAULT_TARGETS, SUPPORTED_TARGETS
 
 
@@ -25,12 +34,26 @@ class ClearCGUI:
         self.top_var = tk.StringVar(value="20")
         self.clean_var = tk.BooleanVar(value=False)
         self.permanent_var = tk.BooleanVar(value=False)
+        self.is_admin_var = tk.StringVar(value="是" if is_admin() else "否")
+        self.resetbase_ack_var = tk.BooleanVar(value=False)
+        self.resetbase_text_var = tk.StringVar(value="")
+        self.dism_summary_vars: dict[str, tk.StringVar] = {
+            "explorer_reported_size": tk.StringVar(value="-"),
+            "actual_size": tk.StringVar(value="-"),
+            "shared_with_windows": tk.StringVar(value="-"),
+            "backups_and_disabled_features": tk.StringVar(value="-"),
+            "cache_and_temp_data": tk.StringVar(value="-"),
+            "last_cleanup_date": tk.StringVar(value="-"),
+            "reclaimable_packages": tk.StringVar(value="-"),
+            "cleanup_recommended_bool": tk.StringVar(value="-"),
+        }
 
         self.target_vars: dict[str, tk.BooleanVar] = {
             target: tk.BooleanVar(value=target in DEFAULT_TARGETS) for target in sorted(SUPPORTED_TARGETS)
         }
 
         self._build_layout()
+        self._refresh_dism_controls()
 
     def _build_layout(self) -> None:
         controls = ttk.LabelFrame(self.root, text="扫描/清理参数")
@@ -75,6 +98,66 @@ class ClearCGUI:
         ttk.Button(button_frame, text="清理（clean）", command=lambda: self._run_scan(clean=True)).pack(
             side=tk.LEFT, padx=6
         )
+
+        dism_frame = ttk.LabelFrame(self.root, text="组件存储（WinSxS / DISM）")
+        dism_frame.pack(fill=tk.X, padx=10, pady=8)
+
+        ttk.Label(dism_frame, text="当前权限（管理员）:").grid(row=0, column=0, sticky=tk.W, padx=6, pady=4)
+        ttk.Label(dism_frame, textvariable=self.is_admin_var).grid(row=0, column=1, sticky=tk.W, padx=6, pady=4)
+
+        self.admin_tip_label = ttk.Label(dism_frame, text="")
+        self.admin_tip_label.grid(row=0, column=2, sticky=tk.W, padx=6, pady=4)
+
+        self.relaunch_button = ttk.Button(dism_frame, text="以管理员重新启动 GUI", command=self._relaunch_gui_as_admin)
+        self.relaunch_button.grid(row=0, column=3, sticky=tk.W, padx=6, pady=4)
+
+        self.analyze_button = ttk.Button(dism_frame, text="Analyze（分析）", command=self._run_analyze)
+        self.analyze_button.grid(row=1, column=0, sticky=tk.W, padx=6, pady=4)
+
+        self.clean_button = ttk.Button(dism_frame, text="Clean（StartComponentCleanup）", command=self._run_clean)
+        self.clean_button.grid(row=1, column=1, sticky=tk.W, padx=6, pady=4)
+
+        self.resetbase_button = ttk.Button(dism_frame, text="ResetBase（不可逆）", command=self._run_resetbase)
+        self.resetbase_button.grid(row=1, column=2, sticky=tk.W, padx=6, pady=4)
+
+        ttk.Label(
+            dism_frame,
+            text="风险说明：Clean 通常相对安全；ResetBase 不可逆，会失去卸载现有更新能力。",
+            foreground="#b35a00",
+        ).grid(row=2, column=0, columnspan=4, sticky=tk.W, padx=6, pady=(6, 2))
+
+        ttk.Checkbutton(
+            dism_frame,
+            text="我已理解 ResetBase 不可逆风险",
+            variable=self.resetbase_ack_var,
+            command=self._refresh_dism_controls,
+        ).grid(row=3, column=0, columnspan=2, sticky=tk.W, padx=6, pady=4)
+
+        ttk.Label(dism_frame, text="请输入 RESETBASE：").grid(row=3, column=2, sticky=tk.E, padx=6, pady=4)
+        resetbase_entry = ttk.Entry(dism_frame, textvariable=self.resetbase_text_var, width=20)
+        resetbase_entry.grid(row=3, column=3, sticky=tk.W, padx=6, pady=4)
+        self.resetbase_text_var.trace_add("write", lambda *_: self._refresh_dism_controls())
+
+        analyze_result = ttk.LabelFrame(self.root, text="Analyze 结构化结果")
+        analyze_result.pack(fill=tk.X, padx=10, pady=6)
+
+        fields = [
+            ("Windows 资源管理器报告的组件存储大小", "explorer_reported_size"),
+            ("组件存储的实际大小", "actual_size"),
+            ("已与 Windows 共享", "shared_with_windows"),
+            ("备份和已禁用的功能", "backups_and_disabled_features"),
+            ("缓存和临时数据", "cache_and_temp_data"),
+            ("上次清理日期", "last_cleanup_date"),
+            ("可回收的程序包数", "reclaimable_packages"),
+            ("推荐使用组件存储清理", "cleanup_recommended_bool"),
+        ]
+        for idx, (label_text, key) in enumerate(fields):
+            row = idx // 2
+            col = (idx % 2) * 2
+            ttk.Label(analyze_result, text=label_text + "：").grid(row=row, column=col, sticky=tk.W, padx=6, pady=3)
+            ttk.Label(analyze_result, textvariable=self.dism_summary_vars[key]).grid(
+                row=row, column=col + 1, sticky=tk.W, padx=6, pady=3
+            )
 
         summary_frame = ttk.LabelFrame(self.root, text="Target 汇总")
         summary_frame.pack(fill=tk.BOTH, expand=False, padx=10, pady=6)
@@ -122,6 +205,98 @@ class ClearCGUI:
     def _append_log(self, message: str) -> None:
         self.log_text.insert(tk.END, message + "\n")
         self.log_text.see(tk.END)
+
+    def _refresh_dism_controls(self) -> None:
+        admin = self.is_admin_var.get() == "是"
+        can_resetbase = admin and self.resetbase_ack_var.get() and self.resetbase_text_var.get().strip() == "RESETBASE"
+
+        self.analyze_button.configure(state=tk.NORMAL)
+        self.clean_button.configure(state=tk.NORMAL if admin else tk.DISABLED)
+        self.resetbase_button.configure(state=tk.NORMAL if can_resetbase else tk.DISABLED)
+
+        if admin:
+            self.admin_tip_label.configure(text="")
+            self.relaunch_button.configure(state=tk.DISABLED)
+        else:
+            self.admin_tip_label.configure(text="请以管理员身份运行")
+            self.relaunch_button.configure(state=tk.NORMAL)
+
+    def _set_dism_running(self, running: bool) -> None:
+        # 执行 DISM 时禁用按钮，避免并发操作导致日志混乱或误触发高风险命令。
+        state = tk.DISABLED if running else tk.NORMAL
+        self.analyze_button.configure(state=state)
+        self.clean_button.configure(state=state)
+        self.resetbase_button.configure(state=state)
+        self.relaunch_button.configure(state=tk.DISABLED if running else self.relaunch_button.cget("state"))
+        if not running:
+            self._refresh_dism_controls()
+
+    def _relaunch_gui_as_admin(self) -> None:
+        try:
+            ok = relaunch_as_admin()
+        except Exception as exc:
+            messagebox.showerror("提权失败", f"无法触发管理员启动：{exc}")
+            return
+        if ok:
+            self._append_log("已尝试以管理员权限启动新 GUI 实例，请在 UAC 弹窗确认。")
+        else:
+            messagebox.showwarning("提权未启动", "未能启动管理员实例，请手动以管理员身份运行。")
+
+    def _run_analyze(self) -> None:
+        self._run_dism_action("Analyze", DISM_ANALYZE_ARGS)
+
+    def _run_clean(self) -> None:
+        if self.is_admin_var.get() != "是":
+            messagebox.showwarning("权限不足", "Clean 需要管理员权限，请以管理员身份运行")
+            return
+        self._run_dism_action("Clean", DISM_CLEAN_ARGS)
+
+    def _run_resetbase(self) -> None:
+        if self.is_admin_var.get() != "是":
+            messagebox.showwarning("权限不足", "ResetBase 需要管理员权限，请以管理员身份运行")
+            return
+        if not self.resetbase_ack_var.get() or self.resetbase_text_var.get().strip() != "RESETBASE":
+            messagebox.showwarning("二次确认未完成", "请勾选风险确认并输入 RESETBASE")
+            return
+        if not messagebox.askyesno("最终确认", "ResetBase 不可逆，执行后将失去卸载现有更新的能力，确定继续？"):
+            return
+        self._run_dism_action("ResetBase", DISM_RESETBASE_ARGS)
+
+    def _run_dism_action(self, action_name: str, args: list[str]) -> None:
+        self._append_log("=" * 72)
+        self._append_log(f"[DISM] 开始执行 {action_name}: DISM {' '.join(args)}")
+        self._set_dism_running(True)
+
+        def _worker() -> None:
+            output_text = ""
+            try:
+                code, output_text = run_dism_stream(args, lambda line: self.root.after(0, self._append_log, line))
+            except Exception as exc:
+                self.root.after(0, lambda: messagebox.showerror("DISM 执行失败", str(exc)))
+                self.root.after(0, self._set_dism_running, False)
+                return
+
+            def _finish() -> None:
+                self._append_log(f"[DISM] {action_name} 退出码: {code}")
+                if action_name == "Analyze":
+                    self._render_analyze_result(output_text)
+                if code != 0:
+                    messagebox.showerror("DISM 执行失败", f"{action_name} 执行失败，退出码: {code}")
+                self._set_dism_running(False)
+
+            self.root.after(0, _finish)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _render_analyze_result(self, output_text: str) -> None:
+        parsed = parse_analyze_output(output_text)
+        for key, var in self.dism_summary_vars.items():
+            value = parsed.get(key, "").strip() or "-"
+            var.set(value)
+
+        if all(parsed.get(k, "").strip() == "" for k in parsed if k not in {"raw_output", "cleanup_recommended_bool"}):
+            self._append_log("[DISM] Analyze 结构化解析失败，以下保留原始输出：")
+            self._append_log(parsed.get("raw_output", "(无输出)"))
 
     def _selected_targets(self) -> list[str]:
         return [name for name, var in self.target_vars.items() if var.get()]
