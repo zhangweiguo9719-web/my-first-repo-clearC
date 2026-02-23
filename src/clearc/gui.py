@@ -178,6 +178,7 @@ class ClearCGUI:
         self.top_tree.grid(row=0, column=0, sticky="nsew", padx=(6, 0), pady=6)
         top_scroll.grid(row=0, column=1, sticky="ns", padx=(0, 6), pady=6)
         self._bind_mousewheel(self.top_tree)
+        self.top_tree.bind("<Double-1>", self._on_top_tree_double_click)
 
     def _build_tab_top_dirs(self) -> None:
         tab = self.tab_top_dirs
@@ -231,6 +232,7 @@ class ClearCGUI:
         self.top_dirs_tree.grid(row=0, column=0, sticky="nsew", padx=(6, 0), pady=6)
         top_dirs_scroll.grid(row=0, column=1, sticky="ns", padx=(0, 6), pady=6)
         self._bind_mousewheel(self.top_dirs_tree)
+        self.top_dirs_tree.bind("<Double-1>", self._on_top_dirs_tree_double_click)
 
 
     def _build_tab_dism(self) -> None:
@@ -520,15 +522,59 @@ class ClearCGUI:
         if not path:
             messagebox.showinfo("提示", "请先在大目录表格中选择一行。")
             return
-        if not Path(path).exists():
-            messagebox.showwarning("路径不存在", f"目标路径不存在：\n{path}")
-            return
+        self._open_path_in_explorer(path, select_file=False)
+
+    def _open_path_in_explorer(self, path: str, select_file: bool) -> bool:
+        # 双击表格后快速跳转，帮助用户直接定位到占用空间的目录/文件。
+        target = Path(path)
+        if not target.exists():
+            messagebox.showwarning("路径不存在", "路径不存在/已删除")
+            return False
+
+        # 优先使用 subprocess 参数列表调用 explorer，避免空格和中文路径被错误拆分。
         try:
-            os.startfile(path)
+            if os.name == "nt":
+                if select_file and target.is_file():
+                    subprocess.Popen(["explorer", f"/select,{str(target)}"])
+                else:
+                    subprocess.Popen(["explorer", str(target)])
+            else:
+                os.startfile(str(target))
         except AttributeError:
             messagebox.showwarning("平台限制", "当前平台不支持 os.startfile，仅 Windows 可直接打开目录。")
+            return False
         except OSError as exc:
-            messagebox.showerror("打开失败", f"无法打开目录：{exc}")
+            # 对异常场景统一提示，避免双击无反馈导致误判为程序卡死。
+            messagebox.showerror("打开失败", f"无法打开路径：{exc}")
+            return False
+
+        self._append_log(f"已打开：{target}")
+        return True
+
+    def _on_top_dirs_tree_double_click(self, event: tk.Event) -> str | None:
+        row_id = self.top_dirs_tree.identify_row(event.y)
+        if not row_id:
+            return "break"
+        values = self.top_dirs_tree.item(row_id, "values")
+        if len(values) < 3:
+            return "break"
+        self._open_path_in_explorer(str(values[2]), select_file=False)
+        return "break"
+
+    def _on_top_tree_double_click(self, event: tk.Event) -> str | None:
+        row_id = self.top_tree.identify_row(event.y)
+        if not row_id:
+            return "break"
+        values = self.top_tree.item(row_id, "values")
+        if len(values) < 4:
+            return "break"
+        path = str(values[3])
+        target = Path(path)
+        if not target.exists():
+            messagebox.showwarning("路径不存在", "路径不存在/已删除")
+            return "break"
+        self._open_path_in_explorer(path, select_file=target.is_file())
+        return "break"
 
     def _export_top_dirs_json(self) -> None:
         if not self.top_dirs_rows:
