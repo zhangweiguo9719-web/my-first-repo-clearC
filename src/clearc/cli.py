@@ -9,6 +9,7 @@ from .scanner import (
     format_size,
     invalid_targets,
     is_admin,
+    parse_dir_list,
     parse_targets,
     process_targets,
 )
@@ -42,6 +43,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--dir-depth", type=int, default=2, help="top_dirs 扫描目录深度（默认: 2）")
     parser.add_argument("--top-dirs", type=int, default=20, help="top_dirs 返回数量（默认: 20）")
+    parser.add_argument("--include-dirs", help="top_dirs 追加扫描目录，逗号分隔")
+    parser.add_argument("--exclude-dirs", help="top_dirs 排除目录，逗号分隔")
+    parser.add_argument("--min-dir-size-mb", type=int, default=0, help="top_dirs 最小目录体积（MB，默认: 0）")
     return parser
 
 
@@ -74,6 +78,8 @@ def run(args: argparse.Namespace) -> int:
         return 2
 
     use_recycle_bin = not args.permanent_delete
+    include_dirs = parse_dir_list(args.include_dirs)
+    exclude_dirs = parse_dir_list(args.exclude_dirs)
     result = process_targets(
         targets=targets,
         drive=args.drive,
@@ -83,6 +89,9 @@ def run(args: argparse.Namespace) -> int:
         use_recycle_bin=use_recycle_bin,
         dir_depth=max(0, args.dir_depth),
         top_dirs=max(1, args.top_dirs),
+        include_dirs=include_dirs,
+        exclude_dirs=exclude_dirs,
+        min_dir_size_mb=max(0, args.min_dir_size_mb),
     )
 
     report = {
@@ -93,6 +102,9 @@ def run(args: argparse.Namespace) -> int:
         "older_than_days": max(0, args.older_than_days),
         "dir_depth": max(0, args.dir_depth),
         "top_dirs": max(1, args.top_dirs),
+        "include_dirs": [str(item) for item in include_dirs],
+        "exclude_dirs": [str(item) for item in exclude_dirs],
+        "min_dir_size_mb": max(0, args.min_dir_size_mb),
         "permanent_delete": args.permanent_delete,
         "use_recycle_bin": use_recycle_bin,
         "is_admin": admin_mode,
