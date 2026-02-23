@@ -46,9 +46,11 @@
 │       ├── __init__.py
 │       ├── __main__.py
 │       ├── cli.py
+│       ├── dism_component_store.py
 │       ├── gui.py
 │       └── scanner.py
 └── tests/
+    ├── test_dism_parse.py
     └── test_help.py
 ```
 
@@ -112,6 +114,30 @@ GUI 功能包含：
 - `older-than-days` / `top` 输入；
 - 日志窗口；
 - Top 文件列表与 target 汇总表。
+
+### 深度清理：WinSxS 组件存储（DISM）
+
+GUI 已内置独立区域“组件存储（WinSxS / DISM）”，支持：
+- `Analyze`：`DISM /Online /Cleanup-Image /AnalyzeComponentStore`
+- `Clean`：`DISM /Online /Cleanup-Image /StartComponentCleanup`
+- `ResetBase`：`DISM /Online /Cleanup-Image /StartComponentCleanup /ResetBase`
+
+风险说明：
+- `Clean` 相对安全，主要清理可回收组件；
+- `ResetBase` **不可逆**，执行后会失去卸载现有更新的能力（高风险）。
+
+管理员权限说明：
+- 非管理员下可执行 `Analyze`；
+- `Clean/ResetBase` 会置灰并提示“请以管理员身份运行”；
+- 可在 GUI 中点击“以管理员重新启动 GUI”触发 UAC 提权。
+
+`Analyze` 完成后，GUI 会结构化展示以下字段（并保留原始日志输出）：
+- Windows 资源管理器报告的组件存储大小
+- 组件存储的实际大小
+- 已与 Windows 共享 / 备份和已禁用的功能 / 缓存和临时数据
+- 上次清理日期
+- 可回收的程序包数
+- 推荐使用组件存储清理（是/否）
 
 GUI 内部通过 `subprocess` 调用 `python -m clearc ... --json <临时文件>`，再解析 JSON 渲染结果。
 
