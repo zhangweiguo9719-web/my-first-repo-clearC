@@ -24,9 +24,31 @@ set PYTHONUTF8=1
 PYTHONPATH=src python -m clearc.gui
 ```
 
+## GUI 分页结构（可访问长内容）
+GUI 已重构为 `ttk.Notebook` 四个分页，避免单页过长导致底部区域不可达：
+
+- **Tab1：快速清理**
+  - targets 多选、`dry-run/clean` 按钮；
+  - Target 汇总表格；
+  - Top 文件列表。
+- **Tab2：大目录占用**
+  - `top_dirs` 专用参数（`--dir-depth` / `--top-dirs`）；
+  - 扫描按钮；
+  - 结果表格（支持复制/打开选中路径）。
+- **Tab3：深度清理**
+  - WinSxS / DISM：Analyze / Clean / ResetBase；
+  - 风险提示与 ResetBase 双重确认；
+  - Analyze 结构化结果与“原始输出开关”。
+- **Tab4：日志**
+  - 集中展示 stdout/stderr/DISM 日志；
+  - 支持一键清空、一键复制。
+
+说明：各分页主表格/文本框均提供垂直滚动条、鼠标滚轮滚动，且支持窗口缩放。
+
 ## 管理员运行方式
 - 命令行：请在“以管理员身份运行”的终端中执行。
 - GUI：可在界面中点击“以管理员重新启动 GUI”（触发 UAC runas）。
+- GUI 的 WinSxS 深度清理页中：Analyze 非管理员可执行；Clean/ResetBase 需要管理员权限。
 
 > 系统级目标（`dumps/do_cache/update_cache`）在 `--clean` 模式下必须管理员；非管理员仅允许 dry-run。
 
