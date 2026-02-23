@@ -1,12 +1,14 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+import csv
 import json
 import os
 import subprocess
 import sys
 import tempfile
 import threading
+from datetime import datetime
 from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox, ttk
@@ -34,6 +36,11 @@ class ClearCGUI:
         self.top_var = tk.StringVar(value="20")
         self.dir_depth_var = tk.StringVar(value="2")
         self.top_dirs_var = tk.StringVar(value="20")
+        self.drill_depth_var = tk.StringVar(value="2")
+        self.include_dirs_var = tk.StringVar(value="")
+        self.exclude_dirs_var = tk.StringVar(value="")
+        self.min_dir_size_var = tk.StringVar(value="0")
+        self.top_dirs_status_var = tk.StringVar(value="就绪")
         self.clean_var = tk.BooleanVar(value=False)
         self.permanent_var = tk.BooleanVar(value=False)
 
@@ -56,6 +63,9 @@ class ClearCGUI:
         self.target_vars: dict[str, tk.BooleanVar] = {
             target: tk.BooleanVar(value=target in DEFAULT_TARGETS) for target in sorted(SUPPORTED_TARGETS)
         }
+        self.latest_report: dict = {}
+        self.top_dirs_rows: list[dict] = []
+        self.top_dirs_sort_state: dict[str, bool] = {}
 
         self._build_layout()
         self._refresh_dism_controls()
@@ -176,34 +186,52 @@ class ClearCGUI:
 
         ctrl = ttk.LabelFrame(tab, text="top_dirs 扫描参数")
         ctrl.grid(row=0, column=0, sticky="ew", padx=6, pady=6)
-        ctrl.columnconfigure(6, weight=1)
+        ctrl.columnconfigure(7, weight=1)
 
         ttk.Label(ctrl, text="目录深度（--dir-depth）：").grid(row=0, column=0, sticky=tk.W, padx=6, pady=4)
         ttk.Entry(ctrl, textvariable=self.dir_depth_var, width=8).grid(row=0, column=1, sticky=tk.W, padx=6)
         ttk.Label(ctrl, text="输出数量（--top-dirs）：").grid(row=0, column=2, sticky=tk.W, padx=6, pady=4)
         ttk.Entry(ctrl, textvariable=self.top_dirs_var, width=8).grid(row=0, column=3, sticky=tk.W, padx=6)
-        ttk.Button(ctrl, text="扫描大目录（仅扫描）", command=self._run_top_dirs_scan).grid(row=0, column=4, sticky=tk.W, padx=6)
-        ttk.Button(ctrl, text="复制选中路径", command=self._copy_selected_top_path).grid(row=0, column=5, sticky=tk.W, padx=6)
-        ttk.Button(ctrl, text="打开选中路径", command=self._open_selected_top_path).grid(row=0, column=6, sticky=tk.W, padx=6)
+        ttk.Label(ctrl, text="最小目录（MB）：").grid(row=0, column=4, sticky=tk.W, padx=6, pady=4)
+        ttk.Entry(ctrl, textvariable=self.min_dir_size_var, width=8).grid(row=0, column=5, sticky=tk.W, padx=6)
+        ttk.Button(ctrl, text="扫描大目录（仅扫描）", command=self._run_top_dirs_scan).grid(row=0, column=6, sticky=tk.W, padx=6)
+
+        ttk.Label(ctrl, text="追加目录（逗号分隔）：").grid(row=1, column=0, sticky=tk.W, padx=6, pady=4)
+        ttk.Entry(ctrl, textvariable=self.include_dirs_var).grid(row=1, column=1, columnspan=3, sticky="ew", padx=6)
+        ttk.Label(ctrl, text="排除目录（逗号分隔）：").grid(row=1, column=4, sticky=tk.W, padx=6, pady=4)
+        ttk.Entry(ctrl, textvariable=self.exclude_dirs_var).grid(row=1, column=5, columnspan=3, sticky="ew", padx=6)
+
+        button_frame = ttk.Frame(ctrl)
+        button_frame.grid(row=2, column=0, columnspan=8, sticky="ew", padx=6, pady=(4, 2))
+        ttk.Label(button_frame, text="下钻深度：").pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Entry(button_frame, textvariable=self.drill_depth_var, width=8).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Button(button_frame, text="下钻扫描", command=self._run_drill_down_scan).pack(side=tk.LEFT, padx=4)
+        ttk.Button(button_frame, text="打开目录", command=self._open_selected_top_path).pack(side=tk.LEFT, padx=4)
+        ttk.Button(button_frame, text="复制选中路径", command=self._copy_selected_top_path).pack(side=tk.LEFT, padx=4)
+        ttk.Button(button_frame, text="导出报告（JSON）", command=self._export_top_dirs_json).pack(side=tk.LEFT, padx=4)
+        ttk.Label(button_frame, textvariable=self.top_dirs_status_var, foreground="#245").pack(side=tk.RIGHT, padx=6)
 
         table_frame = ttk.LabelFrame(tab, text="大目录结果")
         table_frame.grid(row=1, column=0, sticky="nsew", padx=6, pady=6)
         table_frame.columnconfigure(0, weight=1)
         table_frame.rowconfigure(0, weight=1)
 
-        top_dir_cols = ("size", "files", "path")
+        top_dir_cols = ("size", "files", "path", "note")
         self.top_dirs_tree = ttk.Treeview(table_frame, columns=top_dir_cols, show="headings")
-        self.top_dirs_tree.heading("size", text="大小")
-        self.top_dirs_tree.heading("files", text="文件数")
-        self.top_dirs_tree.heading("path", text="目录路径")
-        self.top_dirs_tree.column("size", width=140)
-        self.top_dirs_tree.column("files", width=120)
-        self.top_dirs_tree.column("path", width=860)
+        self.top_dirs_tree.heading("size", text="大小", command=lambda: self._sort_top_dirs_table("size"))
+        self.top_dirs_tree.heading("files", text="文件数", command=lambda: self._sort_top_dirs_table("files"))
+        self.top_dirs_tree.heading("path", text="目录路径", command=lambda: self._sort_top_dirs_table("path"))
+        self.top_dirs_tree.heading("note", text="提示")
+        self.top_dirs_tree.column("size", width=130, anchor=tk.E)
+        self.top_dirs_tree.column("files", width=90, anchor=tk.E)
+        self.top_dirs_tree.column("path", width=620)
+        self.top_dirs_tree.column("note", width=360)
         top_dirs_scroll = ttk.Scrollbar(table_frame, orient=tk.VERTICAL, command=self.top_dirs_tree.yview)
         self.top_dirs_tree.configure(yscrollcommand=top_dirs_scroll.set)
         self.top_dirs_tree.grid(row=0, column=0, sticky="nsew", padx=(6, 0), pady=6)
         top_dirs_scroll.grid(row=0, column=1, sticky="ns", padx=(0, 6), pady=6)
         self._bind_mousewheel(self.top_dirs_tree)
+
 
     def _build_tab_dism(self) -> None:
         tab = self.tab_dism
@@ -458,7 +486,16 @@ class ClearCGUI:
         threading.Thread(target=self._run_cli, args=(targets, clean), daemon=True).start()
 
     def _run_top_dirs_scan(self) -> None:
+        self.top_dirs_status_var.set("正在扫描大目录，请稍候…")
         threading.Thread(target=self._run_cli, args=(['top_dirs'], False), daemon=True).start()
+
+    def _run_drill_down_scan(self) -> None:
+        path = self._get_selected_top_path()
+        if not path:
+            messagebox.showinfo("提示", "请先在大目录表格中选择一行。")
+            return
+        self.top_dirs_status_var.set(f"正在下钻扫描：{path}")
+        threading.Thread(target=self._run_cli, args=(['top_dirs'], False, path), daemon=True).start()
 
     def _get_selected_top_path(self) -> str:
         selected = self.top_dirs_tree.selection()
@@ -493,12 +530,52 @@ class ClearCGUI:
         except OSError as exc:
             messagebox.showerror("打开失败", f"无法打开目录：{exc}")
 
-    def _run_cli(self, targets: list[str], clean: bool) -> None:
+    def _export_top_dirs_json(self) -> None:
+        if not self.top_dirs_rows:
+            messagebox.showinfo("提示", "当前没有可导出的大目录结果。")
+            return
+        out = Path.cwd() / f"top_dirs_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        out.write_text(json.dumps(self.top_dirs_rows, ensure_ascii=False, indent=2), encoding="utf-8")
+        self._append_log(f"大目录报告已导出: {out}")
+        messagebox.showinfo("导出完成", f"已导出到：\n{out}")
+
+    def _sort_top_dirs_table(self, column: str) -> None:
+        reverse = not self.top_dirs_sort_state.get(column, False)
+        self.top_dirs_sort_state[column] = reverse
+
+        def _key(row: dict) -> tuple:
+            if column == "size":
+                return (int(row.get("size_bytes", 0)),)
+            if column == "files":
+                return (int(row.get("file_count", 0)),)
+            return (str(row.get("path", "")),)
+
+        self.top_dirs_rows.sort(key=_key, reverse=reverse)
+        self._refresh_top_dirs_table()
+
+    def _refresh_top_dirs_table(self) -> None:
+        for item in self.top_dirs_tree.get_children():
+            self.top_dirs_tree.delete(item)
+        for row in self.top_dirs_rows:
+            self.top_dirs_tree.insert(
+                "",
+                tk.END,
+                values=(
+                    row.get("size_human", ""),
+                    row.get("file_count", ""),
+                    row.get("path", ""),
+                    row.get("note", ""),
+                ),
+            )
+
+
+    def _run_cli(self, targets: list[str], clean: bool, drill_root: str = "") -> None:
         try:
             older_days = max(0, int(self.older_days_var.get().strip()))
             top_n = max(1, int(self.top_var.get().strip()))
-            dir_depth = max(0, int(self.dir_depth_var.get().strip()))
+            dir_depth = max(0, int(self.drill_depth_var.get().strip())) if drill_root else max(0, int(self.dir_depth_var.get().strip()))
             top_dirs = max(1, int(self.top_dirs_var.get().strip()))
+            min_dir_size_mb = max(0, int(self.min_dir_size_var.get().strip()))
         except ValueError:
             self.root.after(0, lambda: messagebox.showerror("参数错误", "数值参数必须是整数"))
             return
@@ -522,9 +599,19 @@ class ClearCGUI:
                 str(dir_depth),
                 "--top-dirs",
                 str(top_dirs),
+                "--min-dir-size-mb",
+                str(min_dir_size_mb),
                 "--json",
                 str(json_path),
             ]
+            include_dirs = self.include_dirs_var.get().strip()
+            exclude_dirs = self.exclude_dirs_var.get().strip()
+            if drill_root:
+                include_dirs = drill_root
+            if include_dirs:
+                cmd.extend(["--include-dirs", include_dirs])
+            if exclude_dirs:
+                cmd.extend(["--exclude-dirs", exclude_dirs])
             if clean:
                 cmd.extend(["--clean", "--yes"])
             else:
@@ -556,6 +643,7 @@ class ClearCGUI:
 
             self.root.after(0, _update_log)
             if completed.returncode != 0:
+                self.root.after(0, lambda: self.top_dirs_status_var.set("扫描失败，请检查日志"))
                 return
 
             try:
@@ -564,14 +652,15 @@ class ClearCGUI:
                 self.root.after(0, lambda: self._append_log(f"读取/解析 JSON 失败: {exc}"))
                 return
             self.root.after(0, lambda: self._render_report(report))
+            self.root.after(0, lambda: self.top_dirs_status_var.set("扫描完成"))
 
     def _render_report(self, report: dict) -> None:
+        self.latest_report = report
+        self.top_dirs_rows = []
         for item in self.summary_tree.get_children():
             self.summary_tree.delete(item)
         for item in self.top_tree.get_children():
             self.top_tree.delete(item)
-        for item in self.top_dirs_tree.get_children():
-            self.top_dirs_tree.delete(item)
 
         summary = report.get("summary", {})
         for target_item in summary.get("targets", []):
@@ -610,11 +699,14 @@ class ClearCGUI:
                 ),
             )
             if top_item.get("target") == "top_dirs":
-                self.top_dirs_tree.insert(
-                    "",
-                    tk.END,
-                    values=(top_item.get("size_human", ""), top_item.get("file_count", ""), top_item.get("path", "")),
-                )
+                self.top_dirs_rows.append(top_item)
+
+        self._refresh_top_dirs_table()
+
+        if self.top_dirs_rows:
+            top3 = self.top_dirs_rows[:3]
+            top3_text = "；".join(f"{item.get('path', '')} ({item.get('size_human', '-')})" for item in top3)
+            self._append_log("最大目录 Top 3: " + top3_text)
 
         self._append_log(
             "汇总: preview={0} files ({1}), deleted={2} files ({3})".format(
@@ -624,6 +716,7 @@ class ClearCGUI:
                 summary.get("deleted_size_human", "-"),
             )
         )
+
 
 
 def main() -> int:

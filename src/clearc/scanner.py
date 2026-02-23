@@ -208,23 +208,88 @@ def scan_top_directories(
     *,
     dir_depth: int = 2,
     top_dirs: int = 20,
+    include_dirs: list[Path] | None = None,
+    exclude_dirs: list[Path] | None = None,
+    min_dir_size_mb: int = 0,
 ) -> tuple[list[dict], dict[str, int]]:
     stats: dict[str, dict[str, int]] = {}
     skipped: dict[str, int] = {}
+    depth_limit = max(0, dir_depth)
+    min_size_bytes = max(0, min_dir_size_mb) * 1024 * 1024
 
-    for root in roots:
+    normalized_excludes: list[Path] = []
+    for item in exclude_dirs or []:
+        try:
+            normalized_excludes.append(item.resolve())
+        except OSError:
+            normalized_excludes.append(item)
+
+    scan_roots = list(roots)
+    for extra_root in include_dirs or []:
+        if extra_root not in scan_roots:
+            scan_roots.append(extra_root)
+
+    def _is_excluded(path: Path) -> bool:
+        try:
+            path_resolved = path.resolve()
+        except OSError:
+            path_resolved = path
+
+        for excluded in normalized_excludes:
+            if path_resolved == excluded:
+                return True
+            try:
+                path_resolved.relative_to(excluded)
+                return True
+            except ValueError:
+                continue
+        return False
+
+    def _dir_note(path: Path, size_bytes: int) -> str:
+        hints = [
+            ("logioptionsplus\\cache", "疑似缓存目录，删除后可重建，风险较低。"),
+            ("mendeley\\updater", "疑似软件更新目录，建议先打开确认。"),
+            ("nvidia corporation\\nsight", "疑似开发工具缓存/工作区，建议先打开确认。"),
+            ("google\\chrome\\user data", "疑似浏览器缓存/用户数据目录，建议先在浏览器退出后再处理。"),
+            ("microsoft\\edge\\user data", "疑似浏览器缓存/用户数据目录，建议先在浏览器退出后再处理。"),
+            ("mozilla\\firefox\\profiles", "疑似浏览器配置/缓存目录，建议先确认是否为活跃配置。"),
+            ("pip\\cache", "疑似 Python/pip 缓存目录，删除后通常可自动重建，风险较低。"),
+            (".cache\\pip", "疑似 Python/pip 缓存目录，删除后通常可自动重建，风险较低。"),
+            ("anaconda3\\pkgs", "疑似 conda 包缓存目录，删除后可能需要重新下载依赖。"),
+            ("miniconda3\\pkgs", "疑似 conda 包缓存目录，删除后可能需要重新下载依赖。"),
+        ]
+        path_lower = str(path).lower().replace("/", "\\")
+        for token, tip in hints:
+            if token in path_lower:
+                return tip
+        if size_bytes >= 1024 * 1024 * 1024:
+            return "来源不明，请先打开确认，避免误删。"
+        return ""
+
+    for root in scan_roots:
         if not root.exists():
             skipped["not_found"] = skipped.get("not_found", 0) + 1
             continue
 
+        if _is_excluded(root):
+            skipped["excluded"] = skipped.get("excluded", 0) + 1
+            continue
+
         for current_root, dirs, files in os.walk(root, topdown=True, followlinks=False):
             current = Path(current_root)
-            if not _within_depth(root, current, max(0, dir_depth)):
+            if _is_excluded(current):
+                dirs[:] = []
+                skipped["excluded"] = skipped.get("excluded", 0) + 1
+                continue
+
+            if not _within_depth(root, current, depth_limit):
                 dirs[:] = []
                 continue
 
+            dirs[:] = [dir_name for dir_name in dirs if not _is_excluded(current / dir_name)]
+
             key = _human_path(current)
-            info = stats.setdefault(key, {"size_bytes": 0, "file_count": 0})
+            info = stats.setdefault(key, {"size_bytes": 0, "file_count": 0, "depth_used": len(current.relative_to(root).parts)})
 
             for name in files:
                 file_path = current / name
@@ -243,13 +308,34 @@ def scan_top_directories(
             "size_bytes": item["size_bytes"],
             "size_human": format_size(item["size_bytes"]),
             "file_count": item["file_count"],
+            "depth_used": item["depth_used"],
+            "note": _dir_note(Path(path), item["size_bytes"]),
             "target": "top_dirs",
             "reason": "dir_usage",
         }
         for path, item in stats.items()
+        if item["size_bytes"] >= min_size_bytes
     ]
     rows.sort(key=lambda item: item["size_bytes"], reverse=True)
     return rows[: max(1, top_dirs)], skipped
+
+
+def parse_dir_list(raw_dirs: str | None) -> list[Path]:
+    if not raw_dirs:
+        return []
+    result: list[Path] = []
+    seen: set[str] = set()
+    for raw_item in raw_dirs.split(","):
+        value = raw_item.strip()
+        if not value:
+            continue
+        path_item = Path(value).expanduser()
+        key = str(path_item).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(path_item)
+    return result
 
 
 def process_targets(
@@ -261,9 +347,12 @@ def process_targets(
     use_recycle_bin: bool = True,
     dir_depth: int = 2,
     top_dirs: int = 20,
+    include_dirs: list[Path] | None = None,
+    exclude_dirs: list[Path] | None = None,
+    min_dir_size_mb: int = 0,
 ) -> CleanResult:
     scanned_dirs: list[dict] = []
-    candidates_for_top: list[tuple[int, str, str, str, int | None]] = []
+    candidates_for_top: list[dict] = []
     skipped_reasons: dict[str, int] = {}
 
     preview_files = 0
@@ -288,10 +377,15 @@ def process_targets(
 
     for target in targets:
         if target == "top_dirs":
+            # 安全约束：top_dirs 用于“定位大目录来源”，不是“删除候选”。
+            # 即使调用方误传 clean 模式，这里也只做统计扫描，避免误删来源不明目录。
             top_rows, top_skipped = scan_top_directories(
                 get_target_roots(target="top_dirs", drive=drive),
                 dir_depth=dir_depth,
                 top_dirs=top_dirs,
+                include_dirs=include_dirs,
+                exclude_dirs=exclude_dirs,
+                min_dir_size_mb=min_dir_size_mb,
             )
             for reason, count in top_skipped.items():
                 skipped_reasons[reason] = skipped_reasons.get(reason, 0) + count
@@ -303,7 +397,18 @@ def process_targets(
                 preview_size += row["size_bytes"]
                 target_stats[target]["preview_files"] += 1
                 target_stats[target]["preview_size_bytes"] += row["size_bytes"]
-                candidates_for_top.append((row["size_bytes"], row["path"], row["reason"], target, row["file_count"]))
+                candidates_for_top.append(
+                    {
+                        "path": row["path"],
+                        "size_bytes": row["size_bytes"],
+                        "size_human": row["size_human"],
+                        "reason": row["reason"],
+                        "target": target,
+                        "file_count": row["file_count"],
+                        "depth_used": row.get("depth_used", 0),
+                        "note": row.get("note", ""),
+                    }
+                )
 
             scanned_dirs.append(
                 {
@@ -382,7 +487,18 @@ def process_targets(
                     dir_preview_size += size
                     target_stats[target]["preview_files"] += 1
                     target_stats[target]["preview_size_bytes"] += size
-                    candidates_for_top.append((size, _human_path(file_path), reason, target, None))
+                    candidates_for_top.append(
+                        {
+                            "path": _human_path(file_path),
+                            "size_bytes": size,
+                            "size_human": format_size(size),
+                            "reason": reason,
+                            "target": target,
+                            "file_count": None,
+                            "depth_used": None,
+                            "note": "",
+                        }
+                    )
 
                     if dry_run:
                         continue
@@ -422,18 +538,8 @@ def process_targets(
                 }
             )
 
-    candidates_for_top.sort(key=lambda item: item[0], reverse=True)
-    top_files = [
-        {
-            "path": path,
-            "size_bytes": size,
-            "size_human": format_size(size),
-            "reason": reason,
-            "target": target,
-            "file_count": file_count,
-        }
-        for size, path, reason, target, file_count in candidates_for_top[: max(1, top_n)]
-    ]
+    candidates_for_top.sort(key=lambda item: item["size_bytes"], reverse=True)
+    top_files = candidates_for_top[: max(1, top_n)]
 
     target_summaries = [
         {
