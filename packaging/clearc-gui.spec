@@ -9,8 +9,8 @@ icon_value = str(icon_file) if icon_file.exists() else None
 block_cipher = None
 
 a = Analysis(
-    ['src/clearc/gui.py'],
-    pathex=['src'],
+    ['run_clearc_gui.py'],
+    pathex=['..\\src', '..'],
     binaries=[],
     datas=[],
     hiddenimports=['tkinter', 'subprocess'],
