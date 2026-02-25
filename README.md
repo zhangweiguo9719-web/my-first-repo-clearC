@@ -118,6 +118,11 @@ python -m PyInstaller --noconfirm --clean packaging\clearc-gui.spec
 
 产物路径：`dist\clearc.exe`
 
+说明：`packaging/run_clearc_gui.py` 作为 exe 入口，不再直接把 `gui.py` 当脚本执行，
+而是通过 `runpy.run_module("clearc.gui", run_name="__main__")` 以模块方式启动。
+这样可确保 `clearc.gui` 内部相对导入在打包后仍有父包上下文，避免
+`attempted relative import with no known parent package`。
+
 该构建配置已满足：
 - `--onefile`：单文件可执行程序；
 - `--windowed`：无命令行窗口；
@@ -126,6 +131,8 @@ python -m PyInstaller --noconfirm --clean packaging\clearc-gui.spec
 - 打包后可在无 Python 环境的 Windows 机器上运行（依赖随 exe 一并封装）。
 
 注意：GUI 内“以管理员重新启动 GUI”在源码模式与 PyInstaller 打包模式均可用。
+
+提示：涉及系统级深度清理（尤其 DISM Clean/ResetBase）时，请在管理员权限下执行。
 
 ## 测试
 ```bash
