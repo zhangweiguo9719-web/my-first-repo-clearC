@@ -118,10 +118,26 @@ python -m PyInstaller --noconfirm --clean packaging\clearc-gui.spec
 
 产物路径：`dist\clearc.exe`
 
+
+### exe 内部 CLI 模式
+打包后的可执行程序支持内部 CLI 模式：
+
+```bat
+dist\clearc.exe --_cli --dry-run --targets temp,recycle --drive C:
+```
+
+该参数主要供 GUI 内部调用，普通用户也可手动使用；在 onefile 模式下可避免 exe 自调用时再次进入 GUI。
+
 说明：`packaging/run_clearc_gui.py` 作为 exe 入口，不再直接把 `gui.py` 当脚本执行，
-而是通过 `runpy.run_module("clearc.gui", run_name="__main__")` 以模块方式启动。
-这样可确保 `clearc.gui` 内部相对导入在打包后仍有父包上下文，避免
-`attempted relative import with no known parent package`。
+而是使用“GUI/CLI 双模式分流”：
+- 默认无特殊参数时，执行 `runpy.run_module("clearc.gui", run_name="__main__")` 启动 GUI；
+- 传入 `--_cli` 时，执行 `runpy.run_module("clearc", run_name="__main__")` 启动 CLI（等价 `python -m clearc`）。
+
+这样可确保：
+- `clearc.gui` 内部相对导入在打包后仍有父包上下文，避免
+  `attempted relative import with no known parent package`；
+- GUI 在 exe 环境下点击扫描/清理按钮时，会内部调用 `clearc.exe --_cli <args>` 执行 CLI，
+  不会再弹出新的 GUI 窗口。
 
 该构建配置已满足：
 - `--onefile`：单文件可执行程序；

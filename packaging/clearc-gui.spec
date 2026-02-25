@@ -1,6 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 from pathlib import Path
+from PyInstaller.utils.hooks import collect_submodules
 
 project_root = Path.cwd()
 icon_file = project_root / "your_icon.ico"
@@ -13,7 +14,7 @@ a = Analysis(
     pathex=['..\\src', '..'],
     binaries=[],
     datas=[],
-    hiddenimports=['tkinter', 'subprocess'],
+    hiddenimports=['tkinter', 'subprocess', *collect_submodules('clearc')],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

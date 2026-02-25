@@ -133,8 +133,10 @@ class ClearCGUI:
 
         button_frame = ttk.Frame(tab)
         button_frame.grid(row=2, column=0, sticky="ew", padx=6, pady=6)
-        ttk.Button(button_frame, text="执行扫描（dry-run）", command=lambda: self._run_scan(clean=False)).pack(side=tk.LEFT, padx=6)
-        ttk.Button(button_frame, text="执行清理（clean）", command=lambda: self._run_scan(clean=True)).pack(side=tk.LEFT, padx=6)
+        self.scan_button = ttk.Button(button_frame, text="执行扫描（dry-run）", command=lambda: self._run_scan(clean=False))
+        self.scan_button.pack(side=tk.LEFT, padx=6)
+        self.clean_scan_button = ttk.Button(button_frame, text="执行清理（clean）", command=lambda: self._run_scan(clean=True))
+        self.clean_scan_button.pack(side=tk.LEFT, padx=6)
 
         summary_frame = ttk.LabelFrame(tab, text="Target 汇总")
         summary_frame.grid(row=3, column=0, sticky="nsew", padx=6, pady=6)
@@ -195,7 +197,8 @@ class ClearCGUI:
         ttk.Entry(ctrl, textvariable=self.top_dirs_var, width=8).grid(row=0, column=3, sticky=tk.W, padx=6)
         ttk.Label(ctrl, text="最小目录（MB）：").grid(row=0, column=4, sticky=tk.W, padx=6, pady=4)
         ttk.Entry(ctrl, textvariable=self.min_dir_size_var, width=8).grid(row=0, column=5, sticky=tk.W, padx=6)
-        ttk.Button(ctrl, text="扫描大目录（仅扫描）", command=self._run_top_dirs_scan).grid(row=0, column=6, sticky=tk.W, padx=6)
+        self.top_dirs_scan_button = ttk.Button(ctrl, text="扫描大目录（仅扫描）", command=self._run_top_dirs_scan)
+        self.top_dirs_scan_button.grid(row=0, column=6, sticky=tk.W, padx=6)
 
         ttk.Label(ctrl, text="追加目录（逗号分隔）：").grid(row=1, column=0, sticky=tk.W, padx=6, pady=4)
         ttk.Entry(ctrl, textvariable=self.include_dirs_var).grid(row=1, column=1, columnspan=3, sticky="ew", padx=6)
@@ -206,7 +209,8 @@ class ClearCGUI:
         button_frame.grid(row=2, column=0, columnspan=8, sticky="ew", padx=6, pady=(4, 2))
         ttk.Label(button_frame, text="下钻深度：").pack(side=tk.LEFT, padx=(0, 4))
         ttk.Entry(button_frame, textvariable=self.drill_depth_var, width=8).pack(side=tk.LEFT, padx=(0, 10))
-        ttk.Button(button_frame, text="下钻扫描", command=self._run_drill_down_scan).pack(side=tk.LEFT, padx=4)
+        self.drill_down_button = ttk.Button(button_frame, text="下钻扫描", command=self._run_drill_down_scan)
+        self.drill_down_button.pack(side=tk.LEFT, padx=4)
         ttk.Button(button_frame, text="打开目录", command=self._open_selected_top_path).pack(side=tk.LEFT, padx=4)
         ttk.Button(button_frame, text="复制选中路径", command=self._copy_selected_top_path).pack(side=tk.LEFT, padx=4)
         ttk.Button(button_frame, text="导出报告（JSON）", command=self._export_top_dirs_json).pack(side=tk.LEFT, padx=4)
@@ -390,6 +394,13 @@ class ClearCGUI:
         self.analyze_button.configure(state=state)
         self.clean_button.configure(state=state)
         self.resetbase_button.configure(state=state)
+
+    def _set_cli_running(self, running: bool) -> None:
+        state = tk.DISABLED if running else tk.NORMAL
+        self.scan_button.configure(state=state)
+        self.clean_scan_button.configure(state=state)
+        self.top_dirs_scan_button.configure(state=state)
+        self.drill_down_button.configure(state=state)
         if not running:
             self._refresh_dism_controls()
 
@@ -485,9 +496,12 @@ class ClearCGUI:
 
         self._append_log("=" * 72)
         self._append_log(f"开始执行: {'clean' if clean else 'dry-run'}")
+        self._set_cli_running(True)
+        self.top_dirs_status_var.set("任务执行中，请稍候…")
         threading.Thread(target=self._run_cli, args=(targets, clean), daemon=True).start()
 
     def _run_top_dirs_scan(self) -> None:
+        self._set_cli_running(True)
         self.top_dirs_status_var.set("正在扫描大目录，请稍候…")
         threading.Thread(target=self._run_cli, args=(['top_dirs'], False), daemon=True).start()
 
@@ -496,6 +510,7 @@ class ClearCGUI:
         if not path:
             messagebox.showinfo("提示", "请先在大目录表格中选择一行。")
             return
+        self._set_cli_running(True)
         self.top_dirs_status_var.set(f"正在下钻扫描：{path}")
         threading.Thread(target=self._run_cli, args=(['top_dirs'], False, path), daemon=True).start()
 
@@ -624,15 +639,14 @@ class ClearCGUI:
             min_dir_size_mb = max(0, int(self.min_dir_size_var.get().strip()))
         except ValueError:
             self.root.after(0, lambda: messagebox.showerror("参数错误", "数值参数必须是整数"))
+            self.root.after(0, self._set_cli_running, False)
             return
 
         drive = self.drive_var.get().strip() or "C:"
-        with tempfile.TemporaryDirectory(prefix="clearc_gui_") as tmp_dir:
-            json_path = Path(tmp_dir) / "report.json"
-            cmd = [
-                sys.executable,
-                "-m",
-                "clearc",
+        try:
+            with tempfile.TemporaryDirectory(prefix="clearc_gui_") as tmp_dir:
+                json_path = Path(tmp_dir) / "report.json"
+                clearc_cli_args = [
                 "--drive",
                 drive,
                 "--targets",
@@ -650,55 +664,73 @@ class ClearCGUI:
                 "--json",
                 str(json_path),
             ]
-            include_dirs = self.include_dirs_var.get().strip()
-            exclude_dirs = self.exclude_dirs_var.get().strip()
-            if drill_root:
-                include_dirs = drill_root
-            if include_dirs:
-                cmd.extend(["--include-dirs", include_dirs])
-            if exclude_dirs:
-                cmd.extend(["--exclude-dirs", exclude_dirs])
-            if clean:
-                cmd.extend(["--clean", "--yes"])
-            else:
-                cmd.append("--dry-run")
-            if self.permanent_var.get() and clean:
-                cmd.append("--permanent-delete")
+                include_dirs = self.include_dirs_var.get().strip()
+                exclude_dirs = self.exclude_dirs_var.get().strip()
+                if drill_root:
+                    include_dirs = drill_root
+                if include_dirs:
+                    clearc_cli_args.extend(["--include-dirs", include_dirs])
+                if exclude_dirs:
+                    clearc_cli_args.extend(["--exclude-dirs", exclude_dirs])
+                if clean:
+                    clearc_cli_args.extend(["--clean", "--yes"])
+                else:
+                    clearc_cli_args.append("--dry-run")
+                if self.permanent_var.get() and clean:
+                    clearc_cli_args.append("--permanent-delete")
 
-            env = os.environ.copy()
-            env["PYTHONUTF8"] = "1"
-            env["PYTHONIOENCODING"] = "utf-8"
-            completed = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                env=env,
-                cwd=str(Path(__file__).resolve().parents[2]),
-                check=False,
-            )
+                if getattr(sys, "frozen", False):
+                    # onefile exe 内部调用自身时，必须显式走 --_cli 分支；
+                    # 否则会再次启动 GUI，形成“点击按钮不断弹新窗口”的递归自调用。
+                    cmd = [sys.executable, "--_cli", *clearc_cli_args]
+                else:
+                    cmd = [sys.executable, "-m", "clearc", *clearc_cli_args]
 
-            def _update_log() -> None:
-                self._append_log("命令: " + " ".join(cmd))
-                if completed.stdout.strip():
-                    self._append_log("[stdout]\n" + completed.stdout.strip())
-                if completed.stderr.strip():
-                    self._append_log("[stderr]\n" + completed.stderr.strip())
-                self._append_log(f"退出码: {completed.returncode}")
+                env = os.environ.copy()
+                env["PYTHONUTF8"] = "1"
+                env["PYTHONIOENCODING"] = "utf-8"
+                popen_kwargs: dict = {}
+                if getattr(sys, "frozen", False):
+                    popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                else:
+                    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2] / "src")
+                completed = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    env=env,
+                    cwd=str(Path(__file__).resolve().parents[2]),
+                    check=False,
+                    **popen_kwargs,
+                )
 
-            self.root.after(0, _update_log)
-            if completed.returncode != 0:
-                self.root.after(0, lambda: self.top_dirs_status_var.set("扫描失败，请检查日志"))
-                return
+                def _update_log() -> None:
+                    self._append_log("命令: " + " ".join(cmd))
+                    if completed.stdout.strip():
+                        self._append_log("[stdout]\n" + completed.stdout.strip())
+                    if completed.stderr.strip():
+                        self._append_log("[stderr]\n" + completed.stderr.strip())
+                    self._append_log(f"退出码: {completed.returncode}")
 
-            try:
-                report = json.loads(json_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError) as exc:
-                self.root.after(0, lambda: self._append_log(f"读取/解析 JSON 失败: {exc}"))
-                return
-            self.root.after(0, lambda: self._render_report(report))
-            self.root.after(0, lambda: self.top_dirs_status_var.set("扫描完成"))
+                self.root.after(0, _update_log)
+                if completed.returncode != 0:
+                    self.root.after(0, lambda: self.top_dirs_status_var.set("扫描失败，请检查日志"))
+                    return
+
+                try:
+                    report = json.loads(json_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError) as exc:
+                    self.root.after(0, lambda: self._append_log(f"读取/解析 JSON 失败: {exc}"))
+                    return
+                self.root.after(0, lambda: self._render_report(report))
+                self.root.after(0, lambda: self.top_dirs_status_var.set("扫描完成"))
+        except Exception as exc:
+            self.root.after(0, lambda: self._append_log(f"执行失败: {exc}"))
+            self.root.after(0, lambda: self.top_dirs_status_var.set("扫描失败，请检查日志"))
+        finally:
+            self.root.after(0, self._set_cli_running, False)
 
     def _render_report(self, report: dict) -> None:
         self.latest_report = report
