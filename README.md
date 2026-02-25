@@ -101,6 +101,32 @@ GUI 汇总中对 `permission_denied / in_use / not_found` 使用中文解释显�
 其中 `do_cache` 的 `not_found` 会额外提示：
 “未检测到 Delivery Optimization 缓存目录（系统未生成或功能关闭），无需清理。”
 
+
+## 打包为 Windows `.exe`（PyInstaller）
+> 说明：PyInstaller 不能在 Linux/macOS 上直接产出可运行的 Windows `.exe`，请在 Windows 环境执行以下步骤。
+
+### 一键打包（推荐）
+```bat
+scripts\build_windows_exe.bat
+```
+
+### 手动打包命令
+```bat
+python -m pip install -r requirements-build.txt
+python -m PyInstaller --noconfirm --clean packaging\clearc-gui.spec
+```
+
+产物路径：`dist\clearc.exe`
+
+该构建配置已满足：
+- `--onefile`：单文件可执行程序；
+- `--windowed`：无命令行窗口；
+- 图标：若仓库根目录存在 `your_icon.ico`，自动写入图标；否则忽略；
+- `uac_admin=True`：启动时由 UAC 提示管理员权限，满足需要管理员权限的场景；
+- 打包后可在无 Python 环境的 Windows 机器上运行（依赖随 exe 一并封装）。
+
+注意：GUI 内“以管理员重新启动 GUI”在源码模式与 PyInstaller 打包模式均可用。
+
 ## 测试
 ```bash
 python -m unittest tests/test_help.py tests/test_dism_parse.py tests/test_top_dirs.py

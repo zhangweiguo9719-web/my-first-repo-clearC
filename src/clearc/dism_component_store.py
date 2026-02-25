@@ -14,6 +14,14 @@ DISM_CLEAN_ARGS = ["/Online", "/Cleanup-Image", "/StartComponentCleanup"]
 DISM_RESETBASE_ARGS = ["/Online", "/Cleanup-Image", "/StartComponentCleanup", "/ResetBase"]
 
 
+def get_admin_relaunch_command() -> tuple[str, str]:
+    """返回用于 ShellExecuteW(runas) 的可执行文件与参数。"""
+    if getattr(sys, "frozen", False):
+        # PyInstaller onefile/windowed: 直接重启当前 exe。
+        return sys.executable, ""
+    return sys.executable, "-m clearc.gui"
+
+
 def is_admin() -> bool:
     """检测当前进程是否为管理员权限（仅 Windows）。"""
     if sys.platform != "win32":
@@ -30,8 +38,8 @@ def relaunch_as_admin() -> bool:
     if sys.platform != "win32":
         raise RuntimeError("仅 Windows 支持管理员提权启动")
 
-    params = "-m clearc.gui"
-    result = ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, params, None, 1)
+    executable, params = get_admin_relaunch_command()
+    result = ctypes.windll.shell32.ShellExecuteW(None, "runas", executable, params, None, 1)
     return int(result) > 32
 
 
