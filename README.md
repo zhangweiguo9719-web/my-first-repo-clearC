@@ -118,6 +118,26 @@ python -m PyInstaller --noconfirm --clean packaging\clearc-gui.spec
 
 产物路径：`dist\clearc.exe`
 
+## 下载 exe（无需 Python）
+你可以通过以下两种方式获取 `clearc.exe`：
+
+1. **Actions Artifacts（每次 push main / 手动触发）**
+   - 打开仓库 **Actions** 页面；
+   - 进入 `Build Windows EXE` 工作流对应的运行记录；
+   - 在 **Artifacts** 中下载 `clearc-windows-exe`，解压后得到 `clearc.exe`。
+
+2. **Releases（打 tag 或手动选择发布时）**
+   - 打开仓库 **Releases** 页面；
+   - 下载对应版本的 `clearc.exe` 资源文件。
+
+### Windows SmartScreen 提示
+首次运行时，Windows 可能提示“未知发布者”，可按以下步骤继续：
+- 点击“更多信息”；
+- 再点击“仍要运行”。
+
+### 管理员权限提示
+涉及深度清理（如 WinSxS / DISM Clean/ResetBase）时，请右键 `clearc.exe` 并选择“**以管理员身份运行**”。
+
 
 ### exe 内部 CLI 模式
 打包后的可执行程序支持内部 CLI 模式：

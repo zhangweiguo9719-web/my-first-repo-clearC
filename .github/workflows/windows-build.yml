@@ -1,0 +1,80 @@
+name: Build Windows EXE
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: "Publish a GitHub Release"
+        required: false
+        default: false
+        type: boolean
+      release_tag:
+        description: "Tag/version for Release (required when publish_release=true)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.9
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\pip\Cache
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements-build.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+
+      - name: Install build dependencies
+        run: pip install -r requirements-build.txt
+
+      - name: Build clearc.exe with PyInstaller spec
+        run: python -m PyInstaller --clean -y packaging/clearc-gui.spec
+
+      - name: Verify output exists
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "dist/clearc.exe")) {
+            throw "Build output missing: dist/clearc.exe"
+          }
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: clearc-windows-exe
+          path: |
+            dist/clearc.exe
+            README.md
+            LICENSE*
+          if-no-files-found: warn
+
+      - name: Create GitHub Release and upload clearc.exe
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish_release && inputs.release_tag != '')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.release_tag }}
+          name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.release_tag }}
+          files: dist/clearc.exe
+          body: Automated build
+          generate_release_notes: true
