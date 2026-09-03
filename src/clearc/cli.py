@@ -14,11 +14,22 @@ from .scanner import (
     process_targets,
 )
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="clearc：Windows 清理与扫描工具")
+    parser = argparse.ArgumentParser(
+        prog="clearc",
+        description="clearc：Windows 清理与扫描工具（默认仅预览，安全优先）",
+        epilog=(
+            "安全说明：\n"
+            "  · 默认 dry-run（仅预览），只有显式加 --clean --yes 才会真正删除。\n"
+            "  · 默认删除进回收站（可恢复）；--permanent-delete 为永久删除，请谨慎。\n"
+            "  · 系统级目标（dumps/do_cache/update_cache/prefetch/cbs_logs）clean 需管理员。\n"
+            "  · top_dirs 仅统计不删除，永远安全。"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("--version", action="version", version=f"clearc {__version__}")
     parser.add_argument("--drive", default="C:", help="目标盘符（默认: C:）")
     parser.add_argument("--top", type=int, default=20, help="展示 Top 结果数量（默认: 20）")
@@ -61,29 +72,30 @@ def run(args: argparse.Namespace) -> int:
     bad_targets = invalid_targets(targets)
 
     if bad_targets:
-        print("Unsupported targets: " + ", ".join(sorted(bad_targets)))
+        print("错误：包含不支持的清理目标 -> " + ", ".join(sorted(bad_targets)))
         print(
             "支持列表: temp,recycle,wer,dumps,do_cache,update_cache,browser_cache,"
             "pip_cache,npm_cache,thumbnail_cache,recent,prefetch,cbs_logs,"
             "huggingface_cache,codex_cache,poetry_cache,top_dirs"
         )
+        print("请修正 --targets 参数后重试。")
         return 2
 
     if args.clean and not args.yes:
-        print("Refusing to clean without --yes confirmation.")
-        print("拒绝执行：--clean 必须与 --yes 同时使用。")
+        print("错误：--clean 必须与 --yes 同时使用（安全保护）。")
+        print("示例：clearc --clean --yes --targets temp,recycle")
         return 2
 
     if args.clean and "top_dirs" in targets:
-        print("top_dirs 仅支持扫描（dry-run），不支持 clean。")
+        print("错误：top_dirs 是只读统计目标，不支持 clean。请改用 --dry-run。")
         return 2
 
     admin_mode = is_admin()
     requested_system_targets = [target for target in targets if target in SYSTEM_TARGETS]
     if args.clean and requested_system_targets and not admin_mode:
-        print("系统级目标在 clean 模式下需要管理员权限。")
-        print("请以管理员身份运行，或改为 --dry-run。")
+        print("错误：以下系统级目标在 clean 模式下需要管理员权限。")
         print("受影响 targets: " + ", ".join(requested_system_targets))
+        print("解决方式：请以管理员身份重新运行，或改为 --dry-run（仅预览）。")
         return 2
 
     use_recycle_bin = not args.permanent_delete
@@ -140,25 +152,33 @@ def run(args: argparse.Namespace) -> int:
         "top_files": result.top_files,
     }
 
-    print("=== clearc 报告 ===")
-    print(f"drive: {args.drive}")
-    print(f"targets: {','.join(targets)}")
-    print(f"mode: {'dry-run' if dry_run else 'clean'}")
-    print(f"preview: {result.preview_files} files, {report['summary']['preview_size_human']}")
-    print(f"deleted: {result.deleted_files} files, {report['summary']['deleted_size_human']}")
+    mode_label = "仅预览（dry-run）" if dry_run else "清理（clean）"
+    print("=" * 50)
+    print("clearc 报告")
+    print("=" * 50)
+    print(f"盘符      : {args.drive}")
+    print(f"目标      : {','.join(targets)}")
+    print(f"模式      : {mode_label}")
+    print(f"预览      : {result.preview_files} 个文件, {report['summary']['preview_size_human']}")
+    print(f"已删除    : {result.deleted_files} 个文件, {report['summary']['deleted_size_human']}")
     print(
-        "disk: free before={0}, free after={1}, freed={2}".format(
+        "磁盘空间  : 清理前可用 {0} -> 清理后可用 {1}（释放 {2}）".format(
             report["disk"]["free_before_human"],
             report["disk"]["free_after_human"],
             report["disk"]["freed_human"],
         )
     )
+    if dry_run:
+        print("安全提示  : 本次为预览，未删除任何文件。确认无误后请加 --clean --yes 执行清理。")
+    else:
+        recycle_note = "（进回收站，可恢复）" if use_recycle_bin else "（永久删除，不可恢复！）"
+        print(f"删除方式  : {recycle_note}")
 
     if args.json_path:
         out = Path(args.json_path)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-        print(f"JSON report written to: {out}")
+        print(f"JSON 报告  : 已写入 {out}")
 
     return 0
 

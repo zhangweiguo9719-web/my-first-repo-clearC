@@ -25,11 +25,86 @@ from .dism_component_store import (
 from .scanner import DEFAULT_TARGETS, SYSTEM_TARGETS, SUPPORTED_TARGETS
 
 
+# ---------------------------------------------------------------------------
+# 设计 token：统一配色与字体（来自 UI/UX Skill 的"语义色分层 + 统一 token"原则）
+# 语义：danger=危险不可逆 / warning=需谨慎 / success=成功 / info=信息 / primary=主操作
+# ---------------------------------------------------------------------------
+COLOR = {
+    "bg": "#f4f6fa",
+    "surface": "#ffffff",
+    "surface_alt": "#e9edf3",
+    "border": "#d3d9e3",
+    "text": "#1f2430",
+    "text_muted": "#68738a",
+    "primary": "#2456d6",
+    "primary_hover": "#1b45b0",
+    "success": "#0e7a4a",
+    "success_bg": "#e6f6ee",
+    "warning": "#b45309",
+    "warning_bg": "#fdf0e0",
+    "danger": "#c02c2c",
+    "danger_bg": "#fdeaea",
+    "info": "#0e7490",
+    "info_bg": "#e4f4f8",
+}
+FONT = {
+    "base": ("Microsoft YaHei UI", 10),
+    "title": ("Microsoft YaHei UI", 12, "bold"),
+    "small": ("Microsoft YaHei UI", 9),
+    "mono": ("Consolas", 10),
+}
+
+
+class Tooltip:
+    """悬浮提示组件：鼠标悬停控件显示一行说明，帮助理解按钮/参数含义。
+
+    参考高星 UI Skill 的"每个可交互元素都要有可发现的说明"原则。
+    """
+
+    def __init__(self, widget, text: str) -> None:
+        self.widget = widget
+        self.text = text
+        self.tip_window = None
+        widget.bind("<Enter>", self._show, add="+")
+        widget.bind("<Leave>", self._hide, add="+")
+        widget.bind("<ButtonPress>", self._hide, add="+")
+
+    def _show(self, _event) -> None:
+        if self.tip_window is not None or not self.text:
+            return
+        x = self.widget.winfo_rootx() + 14
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 4
+        self.tip_window = tw = tk.Toplevel(self.widget)
+        tw.wm_overrideredirect(True)
+        tw.wm_geometry(f"+{x}+{y}")
+        tw.attributes("-topmost", True)
+        label = tk.Label(
+            tw,
+            text=self.text,
+            justify=tk.LEFT,
+            background="#252a36",
+            foreground="#f2f4f8",
+            relief=tk.SOLID,
+            borderwidth=1,
+            font=FONT["small"],
+            padx=10,
+            pady=6,
+            wraplength=380,
+        )
+        label.pack()
+
+    def _hide(self, _event) -> None:
+        if self.tip_window is not None:
+            self.tip_window.destroy()
+            self.tip_window = None
+
+
 class ClearCGUI:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("clearc 图形界面")
-        self.root.geometry("1180x860")
+        self.root.geometry("1240x880")
+        self.root.minsize(1100, 780)
 
         self.drive_var = tk.StringVar(value="C:")
         self.older_days_var = tk.StringVar(value="7")
@@ -67,8 +142,53 @@ class ClearCGUI:
         self.top_dirs_rows: list[dict] = []
         self.top_dirs_sort_state: dict[str, bool] = {}
 
+        self._setup_style()
+        self.status_var = tk.StringVar(value="就绪")
         self._build_layout()
         self._refresh_dism_controls()
+
+    def _setup_style(self) -> None:
+        """统一主题：把语义色 token 应用到 ttk 控件，让按钮/状态栏有明确层级。
+
+        参考高星 UI Skill 原则：语义色分层（主操作/危险/警告）、统一字号、
+        状态与颜色一一对应，避免默认灰蒙蒙的观感。
+        """
+        style = ttk.Style(self.root)
+        try:
+            style.theme_use("vista")
+        except tk.TclError:
+            pass
+
+        style.configure(".", font=FONT["base"], background=COLOR["bg"], foreground=COLOR["text"])
+        style.configure("TFrame", background=COLOR["bg"])
+        style.configure("TLabel", background=COLOR["bg"], foreground=COLOR["text"])
+        style.configure(
+            "TLabelframe",
+            background=COLOR["bg"],
+            bordercolor=COLOR["border"],
+            relief=tk.GROOVE,
+        )
+        style.configure("TLabelframe.Label", background=COLOR["bg"], foreground=COLOR["text"], font=FONT["title"])
+        style.configure("TButton", padding=(10, 5), font=FONT["base"])
+        style.map("TButton", background=[("active", COLOR["surface_alt"])])
+        style.configure("Accent.TButton", background=COLOR["primary"], foreground="#ffffff")
+        style.map("Accent.TButton", background=[("active", COLOR["primary_hover"]), ("disabled", "#9aa4b5")])
+        style.configure("Danger.TButton", background=COLOR["danger"], foreground="#ffffff")
+        style.map("Danger.TButton", background=[("active", "#991b1b"), ("disabled", "#d8a0a0")])
+        style.configure(
+            "Treeview",
+            rowheight=26,
+            font=FONT["base"],
+            fieldbackground=COLOR["surface"],
+            background=COLOR["surface"],
+        )
+        style.configure(
+            "Treeview.Heading",
+            font=FONT["small"],
+            foreground=COLOR["text_muted"],
+            background=COLOR["surface_alt"],
+        )
+        style.map("Treeview", background=[("selected", COLOR["info_bg"])], foreground=[("selected", COLOR["info"])])
 
     def _build_layout(self) -> None:
         # 主窗口采用 grid，确保 Notebook 与内部表格随窗口缩放。
@@ -76,7 +196,27 @@ class ClearCGUI:
         self.root.columnconfigure(0, weight=1)
 
         self.notebook = ttk.Notebook(self.root)
-        self.notebook.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+        self.notebook.grid(row=0, column=0, sticky="nsew", padx=10, pady=(10, 4))
+
+        # 底部状态栏：统一反馈执行状态（就绪/运行中/完成/失败）
+        statusbar = tk.Frame(self.root, bg=COLOR["bg"])
+        statusbar.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 8))
+        statusbar.columnconfigure(2, weight=1)
+        self.status_dot = tk.Label(statusbar, text="●", font=FONT["small"], fg=COLOR["info"], bg=COLOR["bg"])
+        self.status_dot.grid(row=0, column=0, sticky=tk.W, padx=(10, 4), pady=4)
+        self.status_label = tk.Label(
+            statusbar,
+            textvariable=self.status_var,
+            font=FONT["small"],
+            fg=COLOR["text_muted"],
+            bg=COLOR["bg"],
+        )
+        self.status_label.grid(row=0, column=1, sticky=tk.W, pady=4)
+        ttk.Label(
+            statusbar,
+            text=f"盘符 {self.drive_var.get()}  ·  管理员: {'是' if is_admin() else '否'}  ·  提示：悬停按钮可查看说明",
+            style="TLabel",
+        ).grid(row=0, column=2, sticky=tk.E, padx=10)
 
         self.tab_quick = ttk.Frame(self.notebook)
         self.tab_top_dirs = ttk.Frame(self.notebook)
@@ -100,8 +240,8 @@ class ClearCGUI:
 
         controls = ttk.LabelFrame(tab, text="扫描/清理参数")
         controls.grid(row=0, column=0, sticky="ew", padx=6, pady=6)
-        for idx in range(8):
-            controls.columnconfigure(idx, weight=1 if idx in (6, 7) else 0)
+        for idx in range(6):
+            controls.columnconfigure(idx, weight=1 if idx in (4, 5) else 0)
 
         ttk.Label(controls, text="盘符：").grid(row=0, column=0, sticky=tk.W, padx=6, pady=6)
         ttk.Entry(controls, textvariable=self.drive_var, width=8).grid(row=0, column=1, sticky=tk.W, padx=6)
@@ -110,16 +250,17 @@ class ClearCGUI:
         ttk.Label(controls, text="Top 数量：").grid(row=0, column=4, sticky=tk.W, padx=6)
         ttk.Entry(controls, textvariable=self.top_var, width=8).grid(row=0, column=5, sticky=tk.W, padx=6)
 
-        ttk.Checkbutton(controls, text="清理模式（--clean --yes）", variable=self.clean_var).grid(
-            row=0, column=6, sticky=tk.W, padx=6
-        )
-        ttk.Checkbutton(controls, text="永久删除（高风险）", variable=self.permanent_var).grid(
-            row=0, column=7, sticky=tk.W, padx=6
-        )
+        mode_frame = ttk.Frame(controls)
+        mode_frame.grid(row=1, column=0, columnspan=6, sticky=tk.W, padx=6, pady=(0, 6))
+        ttk.Checkbutton(mode_frame, text="清理模式（--clean --yes）", variable=self.clean_var).pack(side=tk.LEFT, padx=(0, 16))
+        self.permanent_check = ttk.Checkbutton(mode_frame, text="永久删除（高风险）", variable=self.permanent_var)
+        self.permanent_check.pack(side=tk.LEFT)
+        Tooltip(self.permanent_check, "勾选后删除的文件不进入回收站，直接永久删除、无法恢复。仅建议在确认无误时使用。")
 
         target_frame = ttk.LabelFrame(tab, text="清理目标（多选）")
         target_frame.grid(row=1, column=0, sticky="ew", padx=6, pady=6)
-        for idx in range(4):
+        # 3 列布局：兼顾名称完整显示与纵向空间利用（16 个目标 -> 6 行）
+        for idx in range(3):
             target_frame.columnconfigure(idx, weight=1)
 
         col = 0
@@ -127,16 +268,22 @@ class ClearCGUI:
         for target, var in self.target_vars.items():
             ttk.Checkbutton(target_frame, text=target, variable=var).grid(row=row, column=col, sticky=tk.W, padx=10, pady=4)
             col += 1
-            if col >= 4:
+            if col >= 3:
                 row += 1
                 col = 0
 
         button_frame = ttk.Frame(tab)
         button_frame.grid(row=2, column=0, sticky="ew", padx=6, pady=6)
-        self.scan_button = ttk.Button(button_frame, text="执行扫描（dry-run）", command=lambda: self._run_scan(clean=False))
+        self.scan_button = ttk.Button(
+            button_frame, text="执行扫描（dry-run）", style="Accent.TButton", command=lambda: self._run_scan(clean=False)
+        )
         self.scan_button.pack(side=tk.LEFT, padx=6)
-        self.clean_scan_button = ttk.Button(button_frame, text="执行清理（clean）", command=lambda: self._run_scan(clean=True))
+        Tooltip(self.scan_button, "仅预览将要删除的内容，不真正删除任何文件。首次使用建议先执行扫描，确认无误后再清理。")
+        self.clean_scan_button = ttk.Button(
+            button_frame, text="执行清理（clean）", style="Danger.TButton", command=lambda: self._run_scan(clean=True)
+        )
         self.clean_scan_button.pack(side=tk.LEFT, padx=6)
+        Tooltip(self.clean_scan_button, "真正删除所选目标中的缓存/临时文件（可再生，不含个人文档）。执行前会二次确认。")
 
         summary_frame = ttk.LabelFrame(tab, text="Target 汇总")
         summary_frame.grid(row=3, column=0, sticky="nsew", padx=6, pady=6)
@@ -199,6 +346,7 @@ class ClearCGUI:
         ttk.Entry(ctrl, textvariable=self.min_dir_size_var, width=8).grid(row=0, column=5, sticky=tk.W, padx=6)
         self.top_dirs_scan_button = ttk.Button(ctrl, text="扫描大目录（仅扫描）", command=self._run_top_dirs_scan)
         self.top_dirs_scan_button.grid(row=0, column=6, sticky=tk.W, padx=6)
+        Tooltip(self.top_dirs_scan_button, "按目录深度统计磁盘占用，找出占用空间最大的目录（不删除任何内容）。")
 
         ttk.Label(ctrl, text="追加目录（逗号分隔）：").grid(row=1, column=0, sticky=tk.W, padx=6, pady=4)
         ttk.Entry(ctrl, textvariable=self.include_dirs_var).grid(row=1, column=1, columnspan=3, sticky="ew", padx=6)
@@ -211,9 +359,16 @@ class ClearCGUI:
         ttk.Entry(button_frame, textvariable=self.drill_depth_var, width=8).pack(side=tk.LEFT, padx=(0, 10))
         self.drill_down_button = ttk.Button(button_frame, text="下钻扫描", command=self._run_drill_down_scan)
         self.drill_down_button.pack(side=tk.LEFT, padx=4)
-        ttk.Button(button_frame, text="打开目录", command=self._open_selected_top_path).pack(side=tk.LEFT, padx=4)
-        ttk.Button(button_frame, text="复制选中路径", command=self._copy_selected_top_path).pack(side=tk.LEFT, padx=4)
-        ttk.Button(button_frame, text="导出报告（JSON）", command=self._export_top_dirs_json).pack(side=tk.LEFT, padx=4)
+        Tooltip(self.drill_down_button, "对当前选中目录做更深的子目录扫描，层层查看哪里占空间。")
+        self.open_dir_button = ttk.Button(button_frame, text="打开目录", command=self._open_selected_top_path)
+        self.open_dir_button.pack(side=tk.LEFT, padx=4)
+        Tooltip(self.open_dir_button, "在文件资源管理器中打开当前选中的目录。")
+        self.copy_path_button = ttk.Button(button_frame, text="复制选中路径", command=self._copy_selected_top_path)
+        self.copy_path_button.pack(side=tk.LEFT, padx=4)
+        Tooltip(self.copy_path_button, "把当前选中目录的完整路径复制到剪贴板。")
+        self.export_json_button = ttk.Button(button_frame, text="导出报告（JSON）", command=self._export_top_dirs_json)
+        self.export_json_button.pack(side=tk.LEFT, padx=4)
+        Tooltip(self.export_json_button, "把当前大目录扫描结果导出为 JSON 文件，便于保存与分享。")
         ttk.Label(button_frame, textvariable=self.top_dirs_status_var, foreground="#245").pack(side=tk.RIGHT, padx=6)
 
         table_frame = ttk.LabelFrame(tab, text="大目录结果")
@@ -258,10 +413,15 @@ class ClearCGUI:
 
         self.analyze_button = ttk.Button(dism_frame, text="Analyze（分析）", command=self._run_analyze)
         self.analyze_button.grid(row=1, column=0, sticky=tk.W, padx=6, pady=6)
-        self.clean_button = ttk.Button(dism_frame, text="Clean（清理）", command=self._run_clean)
+        Tooltip(self.analyze_button, "分析 WinSxS 组件存储，评估可回收空间（只分析不删除）。")
+        self.clean_button = ttk.Button(dism_frame, text="Clean（清理）", style="Danger.TButton", command=self._run_clean)
         self.clean_button.grid(row=1, column=1, sticky=tk.W, padx=6, pady=6)
-        self.resetbase_button = ttk.Button(dism_frame, text="ResetBase（不可逆）", command=self._run_resetbase)
+        Tooltip(self.clean_button, "清理组件存储中已废弃的旧版本组件（需管理员权限）。")
+        self.resetbase_button = ttk.Button(
+            dism_frame, text="ResetBase（不可逆）", style="Danger.TButton", command=self._run_resetbase
+        )
         self.resetbase_button.grid(row=1, column=2, sticky=tk.W, padx=6, pady=6)
+        Tooltip(self.resetbase_button, "高风险的不可逆操作：合并更新基座，执行后将无法卸载当前已安装的更新。需勾选确认并输入 RESETBASE。")
 
         ttk.Checkbutton(dism_frame, text="我已理解 ResetBase 风险", variable=self.resetbase_ack_var).grid(
             row=2, column=0, columnspan=2, sticky=tk.W, padx=6, pady=4
@@ -360,6 +520,22 @@ class ClearCGUI:
         else:
             self.raw_output_frame.grid_remove()
 
+    def _set_status(self, text: str, level: str = "info") -> None:
+        """更新底部状态栏文字与颜色。
+
+        level 取值：info / success / warning / error，与语义色一一对应。
+        """
+        colors = {
+            "info": COLOR["info"],
+            "success": COLOR["success"],
+            "warning": COLOR["warning"],
+            "error": COLOR["danger"],
+        }
+        color = colors.get(level, COLOR["info"])
+        self.status_var.set(text)
+        self.status_dot.configure(fg=color)
+        self.status_label.configure(fg=color)
+
     def _append_log(self, message: str) -> None:
         self.log_text.insert(tk.END, message + "\n")
         self.log_text.see(tk.END)
@@ -422,7 +598,9 @@ class ClearCGUI:
 
     def _run_clean(self) -> None:
         if self.is_admin_var.get() != "是":
-            messagebox.showwarning("权限不足", "Clean 需要管理员权限，请以管理员身份运行")
+            messagebox.showwarning(
+                "权限不足", "Clean 需要管理员权限。\n\n请关闭程序后右键“以管理员身份运行”，再执行此操作。"
+            )
             return
         self._run_dism_action("Clean", DISM_CLEAN_ARGS)
 
@@ -431,9 +609,15 @@ class ClearCGUI:
             messagebox.showwarning("权限不足", "ResetBase 需要管理员权限，请以管理员身份运行")
             return
         if not self.resetbase_ack_var.get() or self.resetbase_text_var.get().strip() != "RESETBASE":
-            messagebox.showwarning("二次确认未完成", "请勾选风险确认并输入 RESETBASE")
+            messagebox.showwarning(
+                "二次确认未完成",
+                "请先勾选“我已理解 ResetBase 风险”，并在输入框中输入 RESETBASE（需与提示完全一致）。",
+            )
             return
-        if not messagebox.askyesno("最终确认", "ResetBase 不可逆，执行后将失去卸载现有更新的能力，确定继续？"):
+        if not messagebox.askyesno(
+            "最终确认",
+            "ResetBase 是不可逆操作：执行后将无法卸载当前已安装的更新。\n\n建议先做系统备份。确定继续？",
+        ):
             return
         self._run_dism_action("ResetBase", DISM_RESETBASE_ARGS)
 
@@ -480,28 +664,39 @@ class ClearCGUI:
     def _run_scan(self, clean: bool) -> None:
         targets = self._selected_targets()
         if not targets:
-            messagebox.showwarning("clearc GUI", "请至少选择一个 target")
+            messagebox.showwarning("未选择清理目标", "请至少勾选一个清理目标（如 temp、browser_cache 等），再执行扫描或清理。")
             return
 
         if clean and "top_dirs" in targets:
-            messagebox.showwarning("参数冲突", "top_dirs 仅支持 dry-run，不支持 clean。")
+            messagebox.showwarning("参数冲突", "top_dirs 仅用于查看大目录占用，不支持清理。请取消勾选后重试。")
             return
 
         if clean and any(t in SYSTEM_TARGETS for t in targets) and self.is_admin_var.get() != "是":
-            messagebox.showwarning("权限不足", "dumps/do_cache/update_cache 在 clean 模式下需要管理员权限。")
+            messagebox.showwarning(
+                "权限不足",
+                "所选目标（dumps / do_cache / update_cache）在清理模式下需要管理员权限。\n\n"
+                "请以管理员身份重新运行本程序（或点击上方提示操作）。",
+            )
             return
 
-        if clean and not messagebox.askyesno("确认", "将执行清理操作（--clean --yes），是否继续？"):
-            return
+        if clean:
+            mode_tip = "（注意：已勾选“永久删除”，文件不进入回收站，无法恢复）" if self.permanent_var.get() else "（默认进入回收站，可恢复）"
+            if not messagebox.askyesno(
+                "确认清理",
+                f"即将删除所选目标的缓存/临时文件（可再生，不含个人文档）。\n\n{mode_tip}\n\n是否继续？",
+            ):
+                return
 
         self._append_log("=" * 72)
         self._append_log(f"开始执行: {'clean' if clean else 'dry-run'}")
         self._set_cli_running(True)
+        self._set_status("任务执行中，请稍候…", "warning")
         self.top_dirs_status_var.set("任务执行中，请稍候…")
         threading.Thread(target=self._run_cli, args=(targets, clean), daemon=True).start()
 
     def _run_top_dirs_scan(self) -> None:
         self._set_cli_running(True)
+        self._set_status("正在扫描大目录，请稍候…", "warning")
         self.top_dirs_status_var.set("正在扫描大目录，请稍候…")
         threading.Thread(target=self._run_cli, args=(['top_dirs'], False), daemon=True).start()
 
@@ -511,6 +706,7 @@ class ClearCGUI:
             messagebox.showinfo("提示", "请先在大目录表格中选择一行。")
             return
         self._set_cli_running(True)
+        self._set_status(f"正在下钻扫描：{path}", "warning")
         self.top_dirs_status_var.set(f"正在下钻扫描：{path}")
         threading.Thread(target=self._run_cli, args=(['top_dirs'], False, path), daemon=True).start()
 
@@ -717,6 +913,7 @@ class ClearCGUI:
                 self.root.after(0, _update_log)
                 if completed.returncode != 0:
                     self.root.after(0, lambda: self.top_dirs_status_var.set("扫描失败，请检查日志"))
+                    self.root.after(0, lambda: self._set_status("扫描失败，请查看日志", "error"))
                     return
 
                 try:
@@ -726,9 +923,11 @@ class ClearCGUI:
                     return
                 self.root.after(0, lambda: self._render_report(report))
                 self.root.after(0, lambda: self.top_dirs_status_var.set("扫描完成"))
+                self.root.after(0, lambda: self._set_status("扫描完成", "success"))
         except Exception as exc:
             self.root.after(0, lambda: self._append_log(f"执行失败: {exc}"))
             self.root.after(0, lambda: self.top_dirs_status_var.set("扫描失败，请检查日志"))
+            self.root.after(0, lambda: self._set_status("扫描失败，请查看日志", "error"))
         finally:
             self.root.after(0, self._set_cli_running, False)
 
@@ -799,7 +998,18 @@ class ClearCGUI:
 
 def main() -> int:
     root = tk.Tk()
+    try:
+        # 适配高分屏/系统缩放，保证文字清晰
+        root.tk.call("tk", "scaling", 1.25)
+    except tk.TclError:
+        pass
     ClearCGUI(root)
+    root.update_idletasks()
+    w = root.winfo_width()
+    h = root.winfo_height()
+    x = (root.winfo_screenwidth() - w) // 2
+    y = (root.winfo_screenheight() - h) // 2
+    root.geometry(f"+{x}+{y}")
     root.mainloop()
     return 0
 
