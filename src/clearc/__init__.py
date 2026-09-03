@@ -1,5 +1,5 @@
-"""clearc - Windows drive scan-only helper."""
+"""clearc - Windows 磁盘清理与扫描工具。"""
 
-from .cli import main
+from .cli import __version__, main
 
-__all__ = ["main"]
+__all__ = ["main", "__version__"]

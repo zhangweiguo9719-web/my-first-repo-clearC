@@ -2,17 +2,21 @@ from __future__ import annotations
 
 import ctypes
 import os
+import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-from send2trash import send2trash
+try:
+    from send2trash import send2trash
+except ImportError:  # pragma: no cover - 离线环境兜底
+    send2trash = None
 
 TEMP_SUFFIXES = {".tmp", ".log", ".bak", ".old", ".temp"}
 NO_SUFFIX_LARGE_FILE_BYTES = 100 * 1024 * 1024
 DEFAULT_TARGETS = ["temp", "recycle", "wer"]
-SYSTEM_TARGETS = {"do_cache", "update_cache", "dumps"}
+SYSTEM_TARGETS = {"do_cache", "update_cache", "dumps", "prefetch", "cbs_logs"}
 SUPPORTED_TARGETS = {
     "temp",
     "recycle",
@@ -21,8 +25,71 @@ SUPPORTED_TARGETS = {
     "do_cache",
     "update_cache",
     "browser_cache",
+    "pip_cache",
+    "npm_cache",
+    "thumbnail_cache",
+    "recent",
+    "prefetch",
+    "cbs_logs",
+    "huggingface_cache",
+    "codex_cache",
+    "poetry_cache",
     "top_dirs",
 }
+
+
+def _send_to_trash(path: str) -> None:
+    """将文件/目录移入回收站。
+
+    优先使用 send2trash 包；若未安装（离线环境），回退到 Windows Shell API
+    (SHFileOperationW + FOF_ALLOWUNDO)，同样进入回收站，绝不静默永久删除。
+    """
+    if send2trash is not None:
+        send2trash(path)
+        return
+    if os.name == "nt":
+        _shell_recycle(str(path))
+        return
+    raise RuntimeError("send2trash 未安装，且当前平台不支持 Shell 回收站 API")
+
+
+def _shell_recycle(path: str) -> None:
+    """通过 SHFileOperationW 将路径移入回收站（FO_DELETE + FOF_ALLOWUNDO）。"""
+    from ctypes import wintypes
+
+    class _SHFILEOPSTRUCTW(ctypes.Structure):
+        _fields_ = [
+            ("hwnd", wintypes.HWND),
+            ("wFunc", ctypes.c_uint),
+            ("pFrom", wintypes.LPCWSTR),
+            ("pTo", wintypes.LPCWSTR),
+            ("fFlags", ctypes.c_ushort),
+            ("fAnyOperationsAborted", wintypes.BOOL),
+            ("hNameMappings", wintypes.LPVOID),
+            ("lpszProgressTitle", wintypes.LPCWSTR),
+        ]
+
+    FO_DELETE = 0x0003
+    FOF_ALLOWUNDO = 0x0040
+    FOF_NOCONFIRMATION = 0x0010
+    FOF_SILENT = 0x0004
+    FOF_NOERRORUI = 0x0400
+
+    # pFrom 需要以双 null 结尾
+    from_buf = path + "\0\0"
+    op = _SHFILEOPSTRUCTW(
+        hwnd=None,
+        wFunc=FO_DELETE,
+        pFrom=from_buf,
+        pTo=None,
+        fFlags=FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI,
+        fAnyOperationsAborted=False,
+        hNameMappings=None,
+        lpszProgressTitle=None,
+    )
+    result = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op))
+    if result != 0:
+        raise OSError(f"SHFileOperationW 失败，错误码: {result}")
 
 
 @dataclass
@@ -35,6 +102,8 @@ class CleanResult:
     preview_size_bytes: int
     deleted_files: int
     deleted_size_bytes: int
+    disk_free_before_bytes: int = 0
+    disk_free_after_bytes: int = 0
 
 
 def _human_path(path: Path) -> str:
@@ -143,6 +212,59 @@ def get_target_roots(target: str, drive: str = "C:") -> list[Path]:
             ]
         )
 
+    if target == "pip_cache":
+        return _expand_existing([local_app_data / "pip" / "Cache"])
+
+    if target == "npm_cache":
+        return _expand_existing(
+            [
+                local_app_data / "npm-cache",
+                user_home / "AppData" / "Roaming" / "npm-cache",
+                user_home / ".npm",
+            ]
+        )
+
+    if target == "thumbnail_cache":
+        return _expand_existing([local_app_data / "Microsoft" / "Windows" / "Explorer"])
+
+    if target == "recent":
+        return _expand_existing([user_home / "AppData" / "Roaming" / "Microsoft" / "Windows" / "Recent"])
+
+    if target == "prefetch":
+        return _expand_existing([windows_dir / "Prefetch"])
+
+    if target == "cbs_logs":
+        return _expand_existing(
+            [
+                windows_dir / "Logs" / "CBS",
+                windows_dir / "Logs" / "DISM",
+            ]
+        )
+
+    if target == "huggingface_cache":
+        return _expand_existing(
+            [
+                user_home / ".cache" / "huggingface" / "hub",
+                user_home / ".cache" / "huggingface" / "xet",
+            ]
+        )
+
+    if target == "codex_cache":
+        return _expand_existing(
+            [
+                user_home / ".cache" / "codex-runtimes",
+            ]
+        )
+
+    if target == "poetry_cache":
+        # 只清理 Poetry 包缓存（artifacts + 索引缓存），保留 virtualenvs 避免破坏活跃虚拟环境
+        return _expand_existing(
+            [
+                local_app_data / "pypoetry" / "Cache" / "artifacts",
+                local_app_data / "pypoetry" / "Cache" / "cache",
+            ]
+        )
+
     if target == "top_dirs":
         return _expand_existing(
             [
@@ -190,6 +312,13 @@ def _is_candidate(file_path: Path, target: str, older_than_days: int, now_ts: fl
             return True, "temp_suffix_eligible"
         if suffix == "" and file_path.stat().st_size >= NO_SUFFIX_LARGE_FILE_BYTES:
             return True, "no_suffix_large_preview"
+        return False, ""
+
+    if target == "thumbnail_cache":
+        # 只处理缩略图/图标缓存数据库文件，避免误删 Explorer 目录下的其他数据
+        name = file_path.name.lower()
+        if name.startswith("thumbcache_") or name.startswith("iconcache_") or name == "iconcache.db":
+            return True, "thumbnail_cache_file"
         return False, ""
 
     return True, "target_file"
@@ -375,6 +504,15 @@ def process_targets(
 
     now_ts = time.time()
 
+    def _drive_free() -> int:
+        try:
+            drive_root = drive.rstrip("\\/") + "\\"
+            return shutil.disk_usage(drive_root).free
+        except OSError:
+            return 0
+
+    disk_free_before = _drive_free()
+
     for target in targets:
         if target == "top_dirs":
             # 安全约束：top_dirs 用于“定位大目录来源”，不是“删除候选”。
@@ -505,7 +643,7 @@ def process_targets(
 
                     try:
                         if use_recycle_bin:
-                            send2trash(str(file_path))
+                            _send_to_trash(str(file_path))
                         else:
                             file_path.unlink()
                         deleted_files += 1
@@ -568,4 +706,6 @@ def process_targets(
         preview_size_bytes=preview_size,
         deleted_files=deleted_files,
         deleted_size_bytes=deleted_size,
+        disk_free_before_bytes=disk_free_before,
+        disk_free_after_bytes=_drive_free(),
     )

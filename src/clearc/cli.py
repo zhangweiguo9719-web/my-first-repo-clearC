@@ -14,9 +14,12 @@ from .scanner import (
     process_targets,
 )
 
+__version__ = "1.3.0"
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="clearc：Windows 清理与扫描工具")
+    parser.add_argument("--version", action="version", version=f"clearc {__version__}")
     parser.add_argument("--drive", default="C:", help="目标盘符（默认: C:）")
     parser.add_argument("--top", type=int, default=20, help="展示 Top 结果数量（默认: 20）")
     parser.add_argument("--json", dest="json_path", help="可选：将报告输出为 JSON 文件")
@@ -24,7 +27,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--targets",
         help=(
             "目标列表，逗号分隔："
-            "temp,recycle,wer,dumps,do_cache,update_cache,browser_cache,top_dirs；"
+            "temp,recycle,wer,dumps,do_cache,update_cache,browser_cache,"
+            "pip_cache,npm_cache,thumbnail_cache,recent,prefetch,cbs_logs,"
+            "huggingface_cache,codex_cache,poetry_cache,top_dirs；"
             "默认: temp,recycle,wer"
         ),
     )
@@ -57,7 +62,11 @@ def run(args: argparse.Namespace) -> int:
 
     if bad_targets:
         print("Unsupported targets: " + ", ".join(sorted(bad_targets)))
-        print("支持列表: temp,recycle,wer,dumps,do_cache,update_cache,browser_cache,top_dirs")
+        print(
+            "支持列表: temp,recycle,wer,dumps,do_cache,update_cache,browser_cache,"
+            "pip_cache,npm_cache,thumbnail_cache,recent,prefetch,cbs_logs,"
+            "huggingface_cache,codex_cache,poetry_cache,top_dirs"
+        )
         return 2
 
     if args.clean and not args.yes:
@@ -119,6 +128,15 @@ def run(args: argparse.Namespace) -> int:
             "skipped_reasons": result.skipped_reasons,
             "targets": result.target_summaries,
         },
+        "disk": {
+            "drive": args.drive,
+            "free_before_bytes": result.disk_free_before_bytes,
+            "free_before_human": format_size(result.disk_free_before_bytes),
+            "free_after_bytes": result.disk_free_after_bytes,
+            "free_after_human": format_size(result.disk_free_after_bytes),
+            "freed_bytes": max(0, result.disk_free_after_bytes - result.disk_free_before_bytes),
+            "freed_human": format_size(max(0, result.disk_free_after_bytes - result.disk_free_before_bytes)),
+        },
         "top_files": result.top_files,
     }
 
@@ -128,6 +146,13 @@ def run(args: argparse.Namespace) -> int:
     print(f"mode: {'dry-run' if dry_run else 'clean'}")
     print(f"preview: {result.preview_files} files, {report['summary']['preview_size_human']}")
     print(f"deleted: {result.deleted_files} files, {report['summary']['deleted_size_human']}")
+    print(
+        "disk: free before={0}, free after={1}, freed={2}".format(
+            report["disk"]["free_before_human"],
+            report["disk"]["free_after_human"],
+            report["disk"]["freed_human"],
+        )
+    )
 
     if args.json_path:
         out = Path(args.json_path)

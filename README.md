@@ -1,9 +1,12 @@
 # clearc（Windows 清理工具，CLI + Tkinter GUI）
 
 clearc 是一个偏安全的清理/扫描工具，支持：
-- 常见清理目标（temp/recycle/wer/dumps/do_cache/update_cache/browser_cache）；
+- 常见清理目标（temp/recycle/wer/dumps/do_cache/update_cache/browser_cache/pip_cache/npm_cache/thumbnail_cache/recent/prefetch/cbs_logs/huggingface_cache/codex_cache/poetry_cache）；
 - **深度清理：WinSxS 组件存储（DISM）**（GUI 独立区域）；
-- **仅扫描：大目录占用 Top（top_dirs）**，只统计不删除。
+- **仅扫描：大目录占用 Top（top_dirs）**，只统计不删除；
+- **磁盘空间统计**：报告清理前后盘符可用空间与真实释放量（dry-run 与 clean 均输出）。
+
+> 版本：`1.3.0`（新增目标、磁盘统计、回收站兜底安全修复）。
 
 ## 快速开始
 
@@ -28,7 +31,7 @@ PYTHONPATH=src python -m clearc.gui
 GUI 已重构为 `ttk.Notebook` 四个分页，避免单页过长导致底部区域不可达：
 
 - **Tab1：快速清理**
-  - targets 多选、`dry-run/clean` 按钮；
+  - targets 多选（含新增 pip_cache/npm_cache/thumbnail_cache/recent/prefetch/cbs_logs/huggingface_cache/codex_cache/poetry_cache）、`dry-run/clean` 按钮；
   - Target 汇总表格；
   - Top 文件列表。
 - **Tab2：大目录占用**
@@ -45,12 +48,18 @@ GUI 已重构为 `ttk.Notebook` 四个分页，避免单页过长导致底部区
 
 说明：各分页主表格/文本框均提供垂直滚动条、鼠标滚轮滚动，且支持窗口缩放。
 
+## 安全修复说明
+- 已删除会遮蔽真实 `send2trash` 包的 `src/send2trash.py` 兜底模块（其实现为**静默永久删除**）。
+- 现改为：优先使用 `send2trash` 包（回收站）；未安装时回退到 Windows Shell API
+  （`SHFileOperationW` + `FOF_ALLOWUNDO`）同样进回收站，**绝不静默永久删除**。
+- 新增 `--version` 参数。
+
 ## 管理员运行方式
 - 命令行：请在“以管理员身份运行”的终端中执行。
 - GUI：可在界面中点击“以管理员重新启动 GUI”（触发 UAC runas）。
 - GUI 的 WinSxS 深度清理页中：Analyze 非管理员可执行；Clean/ResetBase 需要管理员权限。
 
-> 系统级目标（`dumps/do_cache/update_cache`）在 `--clean` 模式下必须管理员；非管理员仅允许 dry-run。
+> 系统级目标（`dumps/do_cache/update_cache/prefetch/cbs_logs`）在 `--clean` 模式下必须管理员；非管理员仅允许 dry-run。
 
 ## 深度清理：WinSxS（DISM）
 GUI 中提供独立模块“深度清理：组件存储（WinSxS / DISM）”：
