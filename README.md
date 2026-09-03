@@ -157,4 +157,6 @@ clearc/
 
 ## 📜 License
 
-项目开源协议待补充（欢迎提 Issue / PR 建议）。
+[MIT](LICENSE) © 2026 [zhangweiguo9719-web](https://github.com/zhangweiguo9719-web)
+
+本软件按“现状”提供，不附带任何明示或默示的担保。可自由使用、修改、分发，但须保留原始版权声明。详见 [LICENSE](LICENSE) 全文。
